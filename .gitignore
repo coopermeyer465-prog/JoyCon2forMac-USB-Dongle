@@ -1,0 +1,11 @@
+.DS_Store
+*.noindex/
+build.noindex/
+dist.noindex/
+build/
+DerivedData/
+**/sdkconfig
+**/sdkconfig.old
+**/build/
+**/.vscode/
+**/.idea/

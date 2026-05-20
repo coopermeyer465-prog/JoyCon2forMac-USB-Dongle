@@ -1,0 +1,142 @@
+{
+  "configVersion": 4,
+  "mode": "gamepad",
+  "enableLeftJoyCon": true,
+  "mouse": {
+    "sensitivity": 0.35,
+    "rightStickSensitivity": 0.35,
+    "deadzone": 2.0,
+    "smoothing": 0.6,
+    "maxStep": 45.0,
+    "jumpThreshold": 800.0,
+    "calibrationSeconds": 1.0,
+    "invertX": false,
+    "invertY": false,
+    "scrollStep": 3
+  },
+  "keyboard": {
+    "leftStickMode": "wasd",
+    "stickDeadzone": 0.35
+  },
+  "bindings": {},
+  "modeBindings": {
+    "mouse": {
+      "A": {
+        "tap": "key:space"
+      },
+      "B": {
+        "tap": "system:shift_delete"
+      },
+      "R": "mouse:left",
+      "ZR": "mouse:left",
+      "X": "key:f",
+      "Y": "key:e",
+      "L": "mouse:scroll_up",
+      "ZL": "mouse:right",
+      "UP": "system:pov",
+      "DOWN": "key:q",
+      "LEFT": {
+        "tap": "key:left_arrow"
+      },
+      "RIGHT": {
+        "tap": "key:t"
+      },
+      "SL(L)": "mouse:scroll_up",
+      "SR(L)": "mouse:scroll_down",
+      "SL(R)": "mouse:scroll_up",
+      "LS": {
+        "tap": "system:double_w"
+      },
+      "RS": "system:pov",
+      "SELECT": "key:escape",
+      "START": "key:escape",
+      "HOME": "system:launchpad",
+      "CAMERA": "system:screenshot",
+      "CHAT": "system:discord"
+    },
+    "hybrid": {
+      "A": {
+        "tap": "key:space"
+      },
+      "B": {
+        "tap": "system:shift_delete"
+      },
+      "R": "mouse:scroll_down",
+      "ZR": "mouse:left",
+      "X": "key:f",
+      "Y": "key:e",
+      "L": "mouse:scroll_up",
+      "ZL": "mouse:right",
+      "UP": "system:pov",
+      "DOWN": "key:q",
+      "LEFT": {
+        "tap": "key:left_arrow"
+      },
+      "RIGHT": {
+        "tap": "key:t"
+      },
+      "SL(L)": "mouse:scroll_up",
+      "SR(L)": "mouse:scroll_down",
+      "SL(R)": "mouse:scroll_up",
+      "LS": {
+        "tap": "system:double_w"
+      },
+      "RS": "system:pov",
+      "SELECT": "key:escape",
+      "START": "key:escape",
+      "HOME": "system:launchpad",
+      "CAMERA": "system:screenshot",
+      "CHAT": "system:discord"
+    },
+    "keyboard": {
+      "A": {
+        "tap": "key:space"
+      },
+      "B": {
+        "tap": "system:shift_delete"
+      },
+      "R": "mouse:scroll_down",
+      "ZR": "key:left_control",
+      "ZL": "mouse:right",
+      "X": "key:f",
+      "Y": "key:e",
+      "UP": "system:pov",
+      "DOWN": "key:q",
+      "LEFT": {
+        "tap": "key:left_arrow"
+      },
+      "RIGHT": {
+        "tap": "key:t"
+      },
+      "LS": {
+        "tap": "system:double_w"
+      },
+      "RS": "system:pov",
+      "SELECT": "key:escape",
+      "START": "key:escape",
+      "HOME": "system:launchpad",
+      "CAMERA": "system:screenshot",
+      "CHAT": "system:discord"
+    },
+    "gamepad": {
+      "A": "gamepad:a",
+      "B": "gamepad:b",
+      "X": "gamepad:x",
+      "Y": "gamepad:y",
+      "L": "gamepad:l1",
+      "R": "gamepad:r1",
+      "ZL": "gamepad:l2",
+      "ZR": "gamepad:r2",
+      "UP": "gamepad:dpad_up",
+      "DOWN": "gamepad:dpad_down",
+      "LEFT": "gamepad:dpad_left",
+      "RIGHT": "gamepad:dpad_right",
+      "LS": "gamepad:l3",
+      "RS": "gamepad:r3",
+      "SELECT": "gamepad:minus",
+      "START": "gamepad:plus",
+      "HOME": "gamepad:home",
+      "CAMERA": "gamepad:capture"
+    }
+  }
+}
