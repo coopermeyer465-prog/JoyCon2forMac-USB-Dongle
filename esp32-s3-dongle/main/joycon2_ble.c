@@ -31,6 +31,7 @@
 static const char *TAG = "joycon2_ble";
 
 static joycon2_state_cb_t s_cb = NULL;
+static joycon2_status_cb_t s_status_cb = NULL;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_write_handle = 0;
 static uint16_t s_notify_handle = 0;
@@ -51,6 +52,12 @@ static uint32_t read_le_u32(const uint8_t *buf) {
            ((uint32_t)buf[1] << 8) |
            ((uint32_t)buf[2] << 16) |
            ((uint32_t)buf[3] << 24);
+}
+
+static void emit_status(joycon2_ble_status_t status) {
+    if (s_status_cb) {
+        s_status_cb(status);
+    }
 }
 
 static void parse_stick_3b(const uint8_t *p, uint16_t *x, uint16_t *y) {
@@ -184,6 +191,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (!adv_is_joycon2(desc)) {
                 return 0;
             }
+            emit_status(JOYCON2_BLE_STATUS_FOUND);
             ESP_LOGI(TAG, "Found Joy-Con 2; connecting...");
             ble_gap_disc_cancel();
             int rc = ble_gap_connect(s_own_addr_type, &desc->addr, 30000, NULL, joycon2_gap_event, NULL);
@@ -204,6 +212,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_notify_handle = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
+            emit_status(JOYCON2_BLE_STATUS_CONNECTED);
             ESP_LOGI(TAG, "Connected; discovering characteristics...");
             // Discover all characteristics over full attribute range.
             int rc = ble_gattc_disc_all_chrs(s_conn_handle, 1, 0xffff, joycon2_chr_disc_cb, NULL);
@@ -219,6 +228,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_notify_handle = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
+            emit_status(JOYCON2_BLE_STATUS_DISCONNECTED);
             joycon2_scan_start();
             return 0;
         }
@@ -228,6 +238,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             }
             joycon2_state_t st;
             parse_packet(event->notify_rx.om->om_data, event->notify_rx.om->om_len, &st);
+            emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
             if (s_cb) {
                 s_cb(&st);
             }
@@ -317,6 +328,7 @@ static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_err
 
     ESP_LOGI(TAG, "Notifications enabled");
     s_subscribed = true;
+    emit_status(JOYCON2_BLE_STATUS_SUBSCRIBED);
     joycon2_send_init_commands();
     return 0;
 }
@@ -335,6 +347,7 @@ static void joycon2_scan_start(void) {
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_gap_disc failed rc=%d", rc);
     } else {
+        emit_status(JOYCON2_BLE_STATUS_SCANNING);
         ESP_LOGI(TAG, "Scanning for Joy-Con 2...");
     }
 }
@@ -378,4 +391,8 @@ void joycon2_ble_start(joycon2_state_cb_t cb) {
     ble_hs_cfg.sync_cb = joycon2_on_sync;
 
     nimble_port_freertos_init(joycon2_host_task);
+}
+
+void joycon2_ble_set_status_callback(joycon2_status_cb_t cb) {
+    s_status_cb = cb;
 }

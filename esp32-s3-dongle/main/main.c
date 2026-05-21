@@ -17,6 +17,15 @@ static const char *TAG = "main";
 #define JOYCON2_STATUS_LED_GPIO GPIO_NUM_21
 #endif
 
+typedef enum {
+    LED_MODE_SCANNING = 0,
+    LED_MODE_FOUND,
+    LED_MODE_CONNECTED,
+    LED_MODE_NOTIFICATIONS,
+} led_mode_t;
+
+static volatile led_mode_t s_led_mode = LED_MODE_SCANNING;
+
 static void status_led_init(void) {
     gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << JOYCON2_STATUS_LED_GPIO,
@@ -35,13 +44,51 @@ static void status_led_set(bool on) {
     (void)gpio_set_level(JOYCON2_STATUS_LED_GPIO, on ? 0 : 1);
 }
 
+static void status_led_pulse(int on_ms, int off_ms) {
+    status_led_set(true);
+    vTaskDelay(pdMS_TO_TICKS(on_ms));
+    status_led_set(false);
+    vTaskDelay(pdMS_TO_TICKS(off_ms));
+}
+
 static void status_led_blink_task(void *param) {
     (void)param;
     while (1) {
-        status_led_set(true);
-        vTaskDelay(pdMS_TO_TICKS(80));
-        status_led_set(false);
-        vTaskDelay(pdMS_TO_TICKS(920));
+        switch (s_led_mode) {
+            case LED_MODE_SCANNING:
+                status_led_pulse(80, 920);
+                break;
+            case LED_MODE_FOUND:
+                status_led_pulse(80, 170);
+                break;
+            case LED_MODE_CONNECTED:
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 720);
+                break;
+            case LED_MODE_NOTIFICATIONS:
+                status_led_set(true);
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                break;
+        }
+    }
+}
+
+static void on_ble_status(joycon2_ble_status_t status) {
+    switch (status) {
+        case JOYCON2_BLE_STATUS_SCANNING:
+        case JOYCON2_BLE_STATUS_DISCONNECTED:
+            s_led_mode = LED_MODE_SCANNING;
+            break;
+        case JOYCON2_BLE_STATUS_FOUND:
+            s_led_mode = LED_MODE_FOUND;
+            break;
+        case JOYCON2_BLE_STATUS_CONNECTED:
+            s_led_mode = LED_MODE_CONNECTED;
+            break;
+        case JOYCON2_BLE_STATUS_SUBSCRIBED:
+        case JOYCON2_BLE_STATUS_NOTIFYING:
+            s_led_mode = LED_MODE_NOTIFICATIONS;
+            break;
     }
 }
 
@@ -113,7 +160,7 @@ static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
 
     // Any incoming state indicates we are connected + receiving notifications.
-    status_led_set(true);
+    s_led_mode = LED_MODE_NOTIFICATIONS;
 
     // "Mouse mode" is a simple modifier: hold Right Stick press (RS) to enable mouse reports.
     // This keeps the dongle gamepad-first while still allowing cursor navigation without a Mac app.
@@ -177,9 +224,10 @@ static void on_joycon_state(const joycon2_state_t *st) {
 void app_main(void) {
     ESP_LOGI(TAG, "Starting JoyCon2forMac ESP32-S3 dongle (scaffold)");
     status_led_init();
-    // Blink while we are not receiving Joy-Con data. The first notification will latch LED on.
+    // LED patterns: slow=scanning, fast=found/connecting, double=connected, solid=input flowing.
     xTaskCreate(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL);
     usb_hid_gamepad_init();
+    joycon2_ble_set_status_callback(on_ble_status);
     joycon2_ble_start(on_joycon_state);
 
     while (1) {
