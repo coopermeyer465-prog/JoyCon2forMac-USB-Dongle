@@ -142,7 +142,7 @@ void app_main(void) {
     joycon2_ble_start(on_joycon_state);
 
     while (1) {
-        tud_task();
-        vTaskDelay(pdMS_TO_TICKS(5));
+        // esp_tinyusb runs its own task after driver install.
+        vTaskDelay(pdMS_TO_TICKS(50));
     }
 }

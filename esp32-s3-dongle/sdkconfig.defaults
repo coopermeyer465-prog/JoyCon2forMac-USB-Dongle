@@ -1,9 +1,8 @@
 # Minimal defaults; user can set target/USB options via `idf.py menuconfig`.
 
 # Enable TinyUSB device stack.
-CONFIG_TINYUSB_ENABLED=y
 CONFIG_TINYUSB_CDC_ENABLED=y
-CONFIG_TINYUSB_HID_ENABLED=y
+CONFIG_TINYUSB_HID_COUNT=1
 
 # NimBLE (preferred BLE host).
 CONFIG_BT_ENABLED=y
@@ -14,4 +13,3 @@ CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
 
 # Make logs readable over USB CDC.
 CONFIG_ESP_CONSOLE_USB_CDC=y
-

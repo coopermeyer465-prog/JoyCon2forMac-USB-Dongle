@@ -3,7 +3,9 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "tinyusb.h"
+#include "tinyusb_default_config.h"
 #include "tusb.h"
+#include "class/hid/hid_device.h"
 
 static const char *TAG = "usb_hid";
 
@@ -109,11 +111,7 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 
 void usb_hid_gamepad_init(void) {
     ESP_LOGI(TAG, "TinyUSB driver install");
-    const tinyusb_config_t cfg = {
-        .device_descriptor = NULL,
-        .string_descriptor = NULL,
-        .external_phy = false,
-    };
+    const tinyusb_config_t cfg = TINYUSB_DEFAULT_CONFIG();
     esp_err_t err = tinyusb_driver_install(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "tinyusb_driver_install failed err=0x%x", (unsigned int)err);

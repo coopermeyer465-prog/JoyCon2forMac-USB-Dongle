@@ -11,7 +11,7 @@
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/ble_gap.h"
-#include "host/ble_gattc.h"
+#include "host/ble_gatt.h"
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
@@ -201,12 +201,11 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             return 0;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {
-            const struct ble_gap_event_notify_rx *nr = &event->notify_rx;
-            if (nr->attr_handle != s_notify_handle) {
+            if (event->notify_rx.attr_handle != s_notify_handle) {
                 return 0;
             }
             joycon2_state_t st;
-            parse_packet(nr->om->om_data, nr->om->om_len, &st);
+            parse_packet(event->notify_rx.om->om_data, event->notify_rx.om->om_len, &st);
             if (s_cb) {
                 s_cb(&st);
             }
@@ -344,8 +343,7 @@ void joycon2_ble_start(joycon2_state_cb_t cb) {
         ESP_ERROR_CHECK(nvs_flash_init());
     }
 
-    ESP_ERROR_CHECK(esp_nimble_hci_and_controller_init());
-    nimble_port_init();
+    ESP_ERROR_CHECK(nimble_port_init());
 
     ble_svc_gap_init();
     ble_svc_gatt_init();
