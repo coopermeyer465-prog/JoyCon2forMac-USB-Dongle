@@ -8,6 +8,8 @@
 #include "tinyusb_default_config.h"
 #include "tusb.h"
 #include "class/hid/hid_device.h"
+#include "tusb_cdc_acm.h"
+#include "tusb_console.h"
 
 static const char *TAG = "usb_hid";
 
@@ -16,10 +18,9 @@ enum {
     REPORT_ID_MOUSE = 2,
 };
 
-// TinyUSB needs a USB configuration descriptor for HID. The Kconfig-driven defaults
-// cover several classes, but HID is easiest and most reliable when we provide it
-// explicitly (matches ESP-IDF's `tusb_hid` example approach).
-#define TUSB_DESC_TOTAL_LEN      (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+// Composite device: CDC (for logs/debug) + HID (gamepad+mouse).
+// CDC consumes 2 interfaces, HID consumes 1 => 3 interfaces total.
+#define TUSB_DESC_TOTAL_LEN      (TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_HID_DESC_LEN)
 
 // Report layout matches the macOS app's virtual gamepad: 16 buttons + hat + 4 axes.
 static const uint8_t hid_report_descriptor[] = {
@@ -100,17 +101,30 @@ static const char *hid_string_descriptor[] = {
     "JoyCon2forMac",       // 1: Manufacturer
     "JoyCon2 USB Dongle",  // 2: Product
     s_serial_str,          // 3: Serial
-    "Gamepad + Mouse",     // 4: Interface
+    "Gamepad + Mouse",     // 4: HID Interface
+    "USB Serial",          // 5: CDC Interface
 };
 
-// 1 configuration, 1 interface (HID). Single HID interface with multiple report IDs
-// (gamepad + mouse) in one report descriptor.
-static const uint8_t hid_configuration_descriptor[] = {
-    // Configuration number, interface count, string index, total length, attributes, power (mA)
-    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+enum {
+    ITF_NUM_CDC = 0,
+    ITF_NUM_CDC_DATA,
+    ITF_NUM_HID,
+    ITF_NUM_TOTAL
+};
 
-    // Interface number, string index, boot protocol, report descriptor len, EP IN addr, size, interval (ms)
-    TUD_HID_DESCRIPTOR(0, 4, false, sizeof(hid_report_descriptor), 0x81, 16, 1),
+enum {
+    EPNUM_CDC_NOTIF = 0x81,
+    EPNUM_CDC_OUT   = 0x02,
+    EPNUM_CDC_IN    = 0x82,
+    EPNUM_HID_IN    = 0x83,
+};
+
+// 1 configuration, 3 interfaces (CDC control + CDC data + HID).
+// The HID interface uses multiple report IDs (gamepad + mouse) in one report descriptor.
+static const uint8_t hid_configuration_descriptor[] = {
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_CDC_DESCRIPTOR(ITF_NUM_CDC, 5, EPNUM_CDC_NOTIF, 8, EPNUM_CDC_OUT, EPNUM_CDC_IN, 64),
+    TUD_HID_DESCRIPTOR(ITF_NUM_HID, 4, false, sizeof(hid_report_descriptor), EPNUM_HID_IN, 16, 1),
 };
 
 // TinyUSB callbacks (minimal).
@@ -154,7 +168,18 @@ void usb_hid_gamepad_init(void) {
     esp_err_t err = tinyusb_driver_install(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "tinyusb_driver_install failed err=0x%x", (unsigned int)err);
+        return;
     }
+
+    // Bring up CDC ACM so we can see logs and debug BLE behavior.
+    tinyusb_config_cdcacm_t acm_cfg = {0}; // defaults
+    err = tusb_cdc_acm_init(&acm_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "tusb_cdc_acm_init failed err=0x%x", (unsigned int)err);
+        return;
+    }
+    // Redirect ESP_LOG / stdout / stderr to CDC.
+    (void)esp_tusb_init_console(TINYUSB_CDC_ACM_0);
 }
 
 void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {

@@ -100,13 +100,33 @@ static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc) {
     if (rc != 0) {
         return false;
     }
-    if (!fields.mfg_data || fields.mfg_data_len < 2) {
-        return false;
+    if (fields.mfg_data && fields.mfg_data_len >= 2) {
+        uint16_t company_id = (uint16_t)fields.mfg_data[0] | ((uint16_t)fields.mfg_data[1] << 8);
+        // Empirically Joy-Con 2 uses 0x0553 in this project, but keep Nintendo's SIG ID too
+        // to reduce false negatives between models / firmware revisions.
+        if (company_id == 0x0553 || company_id == 0x057e) {
+            return true;
+        }
     }
-    uint16_t company_id = (uint16_t)fields.mfg_data[0] | ((uint16_t)fields.mfg_data[1] << 8);
-    // Empirically Joy-Con 2 uses 0x0553 in this project, but keep Nintendo's SIG ID too
-    // to reduce false negatives between models / firmware revisions.
-    return company_id == 0x0553 || company_id == 0x057e;
+
+    // Fallback: match on advertised name when manufacturer data isn't present
+    // (some devices only include mfg data in scan response, or omit it entirely).
+    if (fields.name && fields.name_len > 0) {
+        char name[40];
+        size_t n = fields.name_len < sizeof(name) - 1 ? fields.name_len : sizeof(name) - 1;
+        memcpy(name, fields.name, n);
+        name[n] = '\0';
+
+        // Case-insensitive substring match for "joy" + "con".
+        for (char *p = name; *p; p++) {
+            if (*p >= 'A' && *p <= 'Z') *p = (char)(*p - 'A' + 'a');
+        }
+        if (strstr(name, "joy") && strstr(name, "con")) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 static void joycon2_send_init_commands(void) {
