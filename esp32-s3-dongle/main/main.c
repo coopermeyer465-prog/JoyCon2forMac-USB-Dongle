@@ -2,6 +2,7 @@
 #include <math.h>
 
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -9,6 +10,40 @@
 #include "usb_hid_gamepad.h"
 
 static const char *TAG = "main";
+
+// XIAO ESP32-S3 user LED (active-low). Seeed docs: GPIO21.
+// Keeping this here avoids needing a separate board support layer.
+#ifndef JOYCON2_STATUS_LED_GPIO
+#define JOYCON2_STATUS_LED_GPIO GPIO_NUM_21
+#endif
+
+static void status_led_init(void) {
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << JOYCON2_STATUS_LED_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = false,
+        .pull_down_en = false,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    (void)gpio_config(&cfg);
+    // Default off (active-low).
+    (void)gpio_set_level(JOYCON2_STATUS_LED_GPIO, 1);
+}
+
+static void status_led_set(bool on) {
+    // active-low
+    (void)gpio_set_level(JOYCON2_STATUS_LED_GPIO, on ? 0 : 1);
+}
+
+static void status_led_blink_task(void *param) {
+    (void)param;
+    while (1) {
+        status_led_set(true);
+        vTaskDelay(pdMS_TO_TICKS(80));
+        status_led_set(false);
+        vTaskDelay(pdMS_TO_TICKS(920));
+    }
+}
 
 // Button bit masks match the macOS parser.
 enum {
@@ -77,6 +112,9 @@ static int8_t clamp_i16_to_i8(int v) {
 static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
 
+    // Any incoming state indicates we are connected + receiving notifications.
+    status_led_set(true);
+
     // "Mouse mode" is a simple modifier: hold Right Stick press (RS) to enable mouse reports.
     // This keeps the dongle gamepad-first while still allowing cursor navigation without a Mac app.
     bool rs = (st->buttons & BTN_RS) != 0;
@@ -138,6 +176,9 @@ static void on_joycon_state(const joycon2_state_t *st) {
 
 void app_main(void) {
     ESP_LOGI(TAG, "Starting JoyCon2forMac ESP32-S3 dongle (scaffold)");
+    status_led_init();
+    // Blink while we are not receiving Joy-Con data. The first notification will latch LED on.
+    xTaskCreate(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL);
     usb_hid_gamepad_init();
     joycon2_ble_start(on_joycon_state);
 

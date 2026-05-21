@@ -104,7 +104,9 @@ static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc) {
         return false;
     }
     uint16_t company_id = (uint16_t)fields.mfg_data[0] | ((uint16_t)fields.mfg_data[1] << 8);
-    return company_id == 0x0553;
+    // Empirically Joy-Con 2 uses 0x0553 in this project, but keep Nintendo's SIG ID too
+    // to reduce false negatives between models / firmware revisions.
+    return company_id == 0x0553 || company_id == 0x057e;
 }
 
 static void joycon2_send_init_commands(void) {
@@ -305,7 +307,9 @@ static void joycon2_scan_start(void) {
     params.passive = 0;
     params.itvl = 0x0010;
     params.window = 0x0010;
-    params.filter_duplicates = 1;
+    // Don't filter duplicates. Some devices (including Joy-Cons) may only expose
+    // manufacturer data in the scan response, which we'd otherwise discard.
+    params.filter_duplicates = 0;
 
     int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &params, joycon2_gap_event, NULL);
     if (rc != 0) {
