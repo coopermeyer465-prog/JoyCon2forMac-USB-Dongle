@@ -2,6 +2,8 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_mac.h"
+#include "esp_system.h"
 #include "tinyusb.h"
 #include "tinyusb_default_config.h"
 #include "tusb.h"
@@ -13,6 +15,11 @@ enum {
     REPORT_ID_GAMEPAD = 1,
     REPORT_ID_MOUSE = 2,
 };
+
+// TinyUSB needs a USB configuration descriptor for HID. The Kconfig-driven defaults
+// cover several classes, but HID is easiest and most reliable when we provide it
+// explicitly (matches ESP-IDF's `tusb_hid` example approach).
+#define TUSB_DESC_TOTAL_LEN      (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
 
 // Report layout matches the macOS app's virtual gamepad: 16 buttons + hat + 4 axes.
 static const uint8_t hid_report_descriptor[] = {
@@ -84,6 +91,28 @@ static const uint8_t hid_report_descriptor[] = {
     0xC0               // End Collection
 };
 
+// String descriptor table:
+// - Index 0 is language ID.
+// - Index 1..N are referenced by the configuration descriptor.
+static char s_serial_str[16] = "000000000000";
+static const char *hid_string_descriptor[] = {
+    (char[]){0x09, 0x04},  // 0: English (0x0409)
+    "JoyCon2forMac",       // 1: Manufacturer
+    "JoyCon2 USB Dongle",  // 2: Product
+    s_serial_str,          // 3: Serial
+    "Gamepad + Mouse",     // 4: Interface
+};
+
+// 1 configuration, 1 interface (HID). Single HID interface with multiple report IDs
+// (gamepad + mouse) in one report descriptor.
+static const uint8_t hid_configuration_descriptor[] = {
+    // Configuration number, interface count, string index, total length, attributes, power (mA)
+    TUD_CONFIG_DESCRIPTOR(1, 1, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+
+    // Interface number, string index, boot protocol, report descriptor len, EP IN addr, size, interval (ms)
+    TUD_HID_DESCRIPTOR(0, 4, false, sizeof(hid_report_descriptor), 0x81, 16, 1),
+};
+
 // TinyUSB callbacks (minimal).
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
     (void)instance;
@@ -110,8 +139,18 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 }
 
 void usb_hid_gamepad_init(void) {
-    ESP_LOGI(TAG, "TinyUSB driver install");
-    const tinyusb_config_t cfg = TINYUSB_DEFAULT_CONFIG();
+    // Use chip MAC as a stable-ish serial string.
+    uint8_t mac[6] = {0};
+    (void)esp_efuse_mac_get_default(mac);
+    snprintf(s_serial_str, sizeof(s_serial_str), "%02X%02X%02X%02X%02X%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    ESP_LOGI(TAG, "TinyUSB driver install (HID config descriptor)");
+    tinyusb_config_t cfg = TINYUSB_DEFAULT_CONFIG();
+    cfg.descriptor.string = hid_string_descriptor;
+    cfg.descriptor.string_count = sizeof(hid_string_descriptor) / sizeof(hid_string_descriptor[0]);
+    cfg.descriptor.full_speed_config = hid_configuration_descriptor;
+    cfg.descriptor.high_speed_config = NULL;
     esp_err_t err = tinyusb_driver_install(&cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "tinyusb_driver_install failed err=0x%x", (unsigned int)err);
