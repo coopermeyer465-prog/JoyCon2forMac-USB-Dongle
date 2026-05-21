@@ -1,22 +1,30 @@
 #include "usb_hid_gamepad.h"
 
+#include "esp_err.h"
 #include "esp_log.h"
+#include "tinyusb.h"
 #include "tusb.h"
 
 static const char *TAG = "usb_hid";
+
+enum {
+    REPORT_ID_GAMEPAD = 1,
+    REPORT_ID_MOUSE = 2,
+};
 
 // Report layout matches the macOS app's virtual gamepad: 16 buttons + hat + 4 axes.
 static const uint8_t hid_report_descriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
     0x09, 0x05,        // Usage (Game Pad)
     0xA1, 0x01,        // Collection (Application)
+    0x85, REPORT_ID_GAMEPAD, //   Report ID
     0x05, 0x09,        //   Usage Page (Button)
     0x19, 0x01,        //   Usage Minimum (Button 1)
-    0x29, 0x10,        //   Usage Maximum (Button 16)
+    0x29, 0x18,        //   Usage Maximum (Button 24)
     0x15, 0x00,        //   Logical Minimum (0)
     0x25, 0x01,        //   Logical Maximum (1)
     0x75, 0x01,        //   Report Size (1)
-    0x95, 0x10,        //   Report Count (16)
+    0x95, 0x18,        //   Report Count (24)
     0x81, 0x02,        //   Input (Data,Var,Abs)
     0x05, 0x01,        //   Usage Page (Generic Desktop)
     0x09, 0x39,        //   Usage (Hat switch)
@@ -40,6 +48,37 @@ static const uint8_t hid_report_descriptor[] = {
     0x75, 0x08,        //   Report Size (8)
     0x95, 0x04,        //   Report Count (4)
     0x81, 0x02,        //   Input (Data,Var,Abs)
+    0xC0               // End Collection
+
+    ,
+    // Mouse (relative), for optional cursor mode while still presenting as a normal gamepad.
+    0x05, 0x01,        // Usage Page (Generic Desktop)
+    0x09, 0x02,        // Usage (Mouse)
+    0xA1, 0x01,        // Collection (Application)
+    0x85, REPORT_ID_MOUSE, //   Report ID
+    0x09, 0x01,        //   Usage (Pointer)
+    0xA1, 0x00,        //   Collection (Physical)
+    0x05, 0x09,        //     Usage Page (Button)
+    0x19, 0x01,        //     Usage Minimum (Button 1)
+    0x29, 0x03,        //     Usage Maximum (Button 3)
+    0x15, 0x00,        //     Logical Minimum (0)
+    0x25, 0x01,        //     Logical Maximum (1)
+    0x95, 0x03,        //     Report Count (3)
+    0x75, 0x01,        //     Report Size (1)
+    0x81, 0x02,        //     Input (Data,Var,Abs)
+    0x95, 0x01,        //     Report Count (1)
+    0x75, 0x05,        //     Report Size (5)
+    0x81, 0x03,        //     Input (Cnst,Var,Abs)
+    0x05, 0x01,        //     Usage Page (Generic Desktop)
+    0x09, 0x30,        //     Usage (X)
+    0x09, 0x31,        //     Usage (Y)
+    0x09, 0x38,        //     Usage (Wheel)
+    0x15, 0x81,        //     Logical Minimum (-127)
+    0x25, 0x7F,        //     Logical Maximum (127)
+    0x75, 0x08,        //     Report Size (8)
+    0x95, 0x03,        //     Report Count (3)
+    0x81, 0x06,        //     Input (Data,Var,Rel)
+    0xC0,              //   End Collection
     0xC0               // End Collection
 };
 
@@ -69,22 +108,42 @@ void tud_hid_set_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_
 }
 
 void usb_hid_gamepad_init(void) {
-    ESP_LOGI(TAG, "TinyUSB init");
-    tusb_init();
+    ESP_LOGI(TAG, "TinyUSB driver install");
+    const tinyusb_config_t cfg = {
+        .device_descriptor = NULL,
+        .string_descriptor = NULL,
+        .external_phy = false,
+    };
+    esp_err_t err = tinyusb_driver_install(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "tinyusb_driver_install failed err=0x%x", (unsigned int)err);
+    }
 }
 
 void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {
     if (!tud_hid_ready() || !report) {
         return;
     }
-    uint8_t buf[7];
+    uint8_t buf[8];
     buf[0] = (uint8_t)(report->buttons & 0xFF);
     buf[1] = (uint8_t)((report->buttons >> 8) & 0xFF);
-    buf[2] = (uint8_t)(report->hat & 0x0F);
-    buf[3] = (uint8_t)report->lx;
-    buf[4] = (uint8_t)report->ly;
-    buf[5] = (uint8_t)report->rx;
-    buf[6] = (uint8_t)report->ry;
-    tud_hid_report(0, buf, sizeof(buf));
+    buf[2] = (uint8_t)((report->buttons >> 16) & 0xFF);
+    buf[3] = (uint8_t)(report->hat & 0x0F);
+    buf[4] = (uint8_t)report->lx;
+    buf[5] = (uint8_t)report->ly;
+    buf[6] = (uint8_t)report->rx;
+    buf[7] = (uint8_t)report->ry;
+    tud_hid_report(REPORT_ID_GAMEPAD, buf, sizeof(buf));
 }
 
+void usb_hid_mouse_send(const usb_mouse_report_t *report) {
+    if (!tud_hid_ready() || !report) {
+        return;
+    }
+    uint8_t buf[4];
+    buf[0] = report->buttons;
+    buf[1] = (uint8_t)report->x;
+    buf[2] = (uint8_t)report->y;
+    buf[3] = (uint8_t)report->wheel;
+    tud_hid_report(REPORT_ID_MOUSE, buf, sizeof(buf));
+}

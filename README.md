@@ -15,8 +15,9 @@ See [mac-app/README.md](mac-app/README.md).
 
 See [esp32-s3-dongle/README.md](esp32-s3-dongle/README.md).
 
+Current dongle defaults: gamepad-first, with an optional mouse modifier (hold RS to move cursor; R/ZR click).
+
 ## Credits
 
 The macOS implementation is based on and heavily inspired by:
 - https://github.com/seitanmen/Joycon2forMac
-

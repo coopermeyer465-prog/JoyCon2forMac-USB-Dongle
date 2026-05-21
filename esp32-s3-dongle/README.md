@@ -15,7 +15,41 @@ This folder is a scaffold for an ESP-IDF firmware project. It is not complete ye
 ## Requirements
 
 - ESP32-S3 board with native USB (USB-OTG / device mode)
+- Confirmed target board: **Seeed Studio XIAO ESP32-S3 (Pre-Soldered)** should work (native USB)
 - ESP-IDF (v5.x recommended)
+
+## Build + Flash (ESP-IDF)
+
+1. Install ESP-IDF (v5.x). Easiest path is Espressif’s “ESP-IDF Tools Installer” for macOS.
+2. From this folder:
+
+```bash
+cd esp32-s3-dongle
+idf.py set-target esp32s3
+idf.py build
+```
+
+3. Plug in the XIAO ESP32-S3 over USB-C and flash + monitor:
+
+```bash
+idf.py flash monitor
+```
+
+If `flash` can’t find the port automatically, specify it:
+
+```bash
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
+```
+
+## Default Behavior (Current)
+
+- The dongle exposes a **USB HID gamepad** to macOS.
+- It also exposes an **optional USB HID mouse**:
+  - Hold **Right Stick Press (RS)** to enter mouse mode
+  - While holding RS:
+    - Right stick moves the cursor (relative)
+    - `R` = left click (drag-select capable)
+    - `ZR` = right click
 
 ## Intended Flow
 
@@ -32,4 +66,3 @@ This folder is a scaffold for an ESP-IDF firmware project. It is not complete ye
 - Init commands (write-without-response, 500ms apart):
   - `0c 91 01 02 00 04 00 00 ff 00 00 00`
   - `0c 91 01 04 00 04 00 00 ff 00 00 00`
-

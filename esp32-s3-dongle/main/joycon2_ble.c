@@ -3,6 +3,19 @@
 #include <string.h>
 
 #include "esp_log.h"
+#include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "host/ble_gap.h"
+#include "host/ble_gattc.h"
+#include "host/util/util.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+#include "esp_nimble_hci.h"
 
 // NOTE: This is a scaffold. Implementing Joy-Con 2 BLE central + GATT discovery using NimBLE
 // is non-trivial and should be done carefully (bonding, reconnection, MTU, notifications, etc).
@@ -18,6 +31,12 @@
 static const char *TAG = "joycon2_ble";
 
 static joycon2_state_cb_t s_cb = NULL;
+static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t s_write_handle = 0;
+static uint16_t s_notify_handle = 0;
+static uint16_t s_notify_cccd_handle = 0;
+static bool s_subscribed = false;
+static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 
 static uint16_t read_le_u16(const uint8_t *buf) {
     return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
@@ -34,6 +53,12 @@ static uint32_t read_le_u32(const uint8_t *buf) {
            ((uint32_t)buf[3] << 24);
 }
 
+static void parse_stick_3b(const uint8_t *p, uint16_t *x, uint16_t *y) {
+    uint32_t v = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
+    *x = (uint16_t)(v & 0x0FFF);
+    *y = (uint16_t)((v >> 12) & 0x0FFF);
+}
+
 static void parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) {
     if (!data || !out || len < 0x3E) {
         return;
@@ -45,22 +70,290 @@ static void parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) 
     out->trigger_r = data[0x3D];
 
     // Stick parse matches macOS version: 12-bit packed pairs in 3 bytes.
-    auto parse_stick = [](const uint8_t *p, uint16_t *x, uint16_t *y) {
-        uint32_t v = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16);
-        *x = (uint16_t)(v & 0x0FFF);
-        *y = (uint16_t)((v >> 12) & 0x0FFF);
-    };
-
-    parse_stick(&data[0x0A], &out->left_x, &out->left_y);
-    parse_stick(&data[0x0D], &out->right_x, &out->right_y);
+    parse_stick_3b(&data[0x0A], &out->left_x, &out->left_y);
+    parse_stick_3b(&data[0x0D], &out->right_x, &out->right_y);
 
     out->mouse_x = read_le_i16(&data[0x10]);
     out->mouse_y = read_le_i16(&data[0x12]);
 }
 
-void joycon2_ble_start(joycon2_state_cb_t cb) {
-    s_cb = cb;
-    ESP_LOGW(TAG, "BLE central implementation is not wired up yet. This is a scaffold.");
-    (void)parse_packet;
+static const ble_uuid128_t kWriteUUID =
+    BLE_UUID128_INIT(0x05, 0xF0, 0xE5, 0x4F, 0xA5, 0x1E, 0x44, 0xAF,
+                     0x6C, 0x4E, 0xB7, 0x8E, 0xC9, 0x4A, 0x9D, 0x64);
+
+static const ble_uuid128_t kNotifyUUID =
+    BLE_UUID128_INIT(0xD2, 0x7F, 0xDF, 0x09, 0x8F, 0x11, 0x2F, 0x81,
+                     0x28, 0xAD, 0xFE, 0x49, 0xBE, 0xE9, 0x7D, 0xAB);
+
+static void joycon2_scan_start(void);
+static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
+static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                               const struct ble_gatt_chr *chr, void *arg);
+static int joycon2_dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                               uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg);
+static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                 struct ble_gatt_attr *attr, void *arg);
+
+static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc) {
+    struct ble_hs_adv_fields fields;
+    int rc = ble_hs_adv_parse_fields(&fields, desc->data, desc->length_data);
+    if (rc != 0) {
+        return false;
+    }
+    if (!fields.mfg_data || fields.mfg_data_len < 2) {
+        return false;
+    }
+    uint16_t company_id = (uint16_t)fields.mfg_data[0] | ((uint16_t)fields.mfg_data[1] << 8);
+    return company_id == 0x0553;
 }
 
+static void joycon2_send_init_commands(void) {
+    if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE || s_write_handle == 0) {
+        ESP_LOGW(TAG, "Cannot send init commands yet (conn=%u write_handle=%u)", s_conn_handle, s_write_handle);
+        return;
+    }
+
+    static const uint8_t cmd1[] = {0x0c, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00};
+    static const uint8_t cmd2[] = {0x0c, 0x91, 0x01, 0x04, 0x00, 0x04, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00};
+
+    ESP_LOGI(TAG, "Sending init command 1");
+    int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_handle, cmd1, sizeof(cmd1));
+    if (rc != 0) {
+        ESP_LOGW(TAG, "write_no_rsp cmd1 failed rc=%d", rc);
+    }
+
+    // Best-effort delay; in a production implementation, use a timer instead.
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    ESP_LOGI(TAG, "Sending init command 2");
+    rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_handle, cmd2, sizeof(cmd2));
+    if (rc != 0) {
+        ESP_LOGW(TAG, "write_no_rsp cmd2 failed rc=%d", rc);
+    }
+}
+
+static void joycon2_try_finish_setup(void) {
+    if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+    if (s_write_handle == 0 || s_notify_handle == 0) {
+        return;
+    }
+    if (s_subscribed) {
+        return;
+    }
+
+    // Enable notifications by locating and writing the CCCD (0x2902) for the notify characteristic.
+    // Some ESP-IDF NimBLE builds don't provide a convenient `ble_gattc_subscribe()` wrapper.
+    s_notify_cccd_handle = 0;
+    ESP_LOGI(TAG, "Discovering descriptors (looking for CCCD) after notify handle=%u", s_notify_handle);
+    int rc = ble_gattc_disc_all_dscs(s_conn_handle, s_notify_handle + 1, 0xffff, joycon2_dsc_disc_cb, NULL);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "disc_all_dscs failed rc=%d", rc);
+        return;
+    }
+}
+
+static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
+    (void)arg;
+    switch (event->type) {
+        case BLE_GAP_EVENT_DISC: {
+            const struct ble_gap_disc_desc *desc = &event->disc;
+            if (!adv_is_joycon2(desc)) {
+                return 0;
+            }
+            ESP_LOGI(TAG, "Found Joy-Con 2; connecting...");
+            ble_gap_disc_cancel();
+            int rc = ble_gap_connect(s_own_addr_type, &desc->addr, 30000, NULL, joycon2_gap_event, NULL);
+            if (rc != 0) {
+                ESP_LOGW(TAG, "connect failed rc=%d; restarting scan", rc);
+                joycon2_scan_start();
+            }
+            return 0;
+        }
+        case BLE_GAP_EVENT_CONNECT: {
+            if (event->connect.status != 0) {
+                ESP_LOGW(TAG, "Connect failed status=%d; restarting scan", event->connect.status);
+                joycon2_scan_start();
+                return 0;
+            }
+            s_conn_handle = event->connect.conn_handle;
+            s_write_handle = 0;
+            s_notify_handle = 0;
+            s_notify_cccd_handle = 0;
+            s_subscribed = false;
+            ESP_LOGI(TAG, "Connected; discovering characteristics...");
+            // Discover all characteristics over full attribute range.
+            int rc = ble_gattc_disc_all_chrs(s_conn_handle, 1, 0xffff, joycon2_chr_disc_cb, NULL);
+            if (rc != 0) {
+                ESP_LOGW(TAG, "disc_all_chrs failed rc=%d", rc);
+            }
+            return 0;
+        }
+        case BLE_GAP_EVENT_DISCONNECT: {
+            ESP_LOGW(TAG, "Disconnected reason=%d; restarting scan", event->disconnect.reason);
+            s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            s_write_handle = 0;
+            s_notify_handle = 0;
+            s_notify_cccd_handle = 0;
+            s_subscribed = false;
+            joycon2_scan_start();
+            return 0;
+        }
+        case BLE_GAP_EVENT_NOTIFY_RX: {
+            const struct ble_gap_event_notify_rx *nr = &event->notify_rx;
+            if (nr->attr_handle != s_notify_handle) {
+                return 0;
+            }
+            joycon2_state_t st;
+            parse_packet(nr->om->om_data, nr->om->om_len, &st);
+            if (s_cb) {
+                s_cb(&st);
+            }
+            return 0;
+        }
+        default:
+            return 0;
+    }
+}
+
+static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                               const struct ble_gatt_chr *chr, void *arg) {
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == BLE_HS_EDONE) {
+        ESP_LOGI(TAG, "Characteristic discovery complete. write=%u notify=%u", s_write_handle, s_notify_handle);
+        joycon2_try_finish_setup();
+        return 0;
+    }
+    if (error->status != 0) {
+        ESP_LOGW(TAG, "Characteristic discovery error status=%d", error->status);
+        return 0;
+    }
+    if (!chr) {
+        return 0;
+    }
+
+    if (ble_uuid_cmp(&chr->uuid.u, &kWriteUUID.u) == 0) {
+        s_write_handle = chr->val_handle;
+        ESP_LOGI(TAG, "Found write characteristic handle=%u", s_write_handle);
+    } else if (ble_uuid_cmp(&chr->uuid.u, &kNotifyUUID.u) == 0) {
+        s_notify_handle = chr->val_handle;
+        ESP_LOGI(TAG, "Found notify characteristic handle=%u", s_notify_handle);
+    }
+    return 0;
+}
+
+static int joycon2_dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                               uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg) {
+    (void)conn_handle;
+    (void)chr_val_handle;
+    (void)arg;
+
+    if (error->status == BLE_HS_EDONE) {
+        if (s_notify_cccd_handle == 0) {
+            ESP_LOGW(TAG, "Descriptor discovery complete but CCCD not found; cannot enable notifications");
+            return 0;
+        }
+
+        uint8_t cccd_val[2] = {0x01, 0x00}; // notifications enabled
+        ESP_LOGI(TAG, "Writing CCCD handle=%u to enable notifications", s_notify_cccd_handle);
+        int rc = ble_gattc_write_flat(s_conn_handle, s_notify_cccd_handle, cccd_val, sizeof(cccd_val),
+                                      joycon2_cccd_write_cb, NULL);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "CCCD write failed rc=%d", rc);
+        }
+        return 0;
+    }
+
+    if (error->status != 0) {
+        ESP_LOGW(TAG, "Descriptor discovery error status=%d", error->status);
+        return 0;
+    }
+    if (!dsc) {
+        return 0;
+    }
+
+    // CCCD UUID is 0x2902.
+    if (ble_uuid_u16(&dsc->uuid.u) == 0x2902) {
+        s_notify_cccd_handle = dsc->handle;
+        ESP_LOGI(TAG, "Found CCCD descriptor handle=%u", s_notify_cccd_handle);
+    }
+
+    return 0;
+}
+
+static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                                 struct ble_gatt_attr *attr, void *arg) {
+    (void)conn_handle;
+    (void)attr;
+    (void)arg;
+
+    if (error->status != 0) {
+        ESP_LOGW(TAG, "CCCD write cb status=%d", error->status);
+        return 0;
+    }
+
+    ESP_LOGI(TAG, "Notifications enabled");
+    s_subscribed = true;
+    joycon2_send_init_commands();
+    return 0;
+}
+
+static void joycon2_scan_start(void) {
+    struct ble_gap_disc_params params;
+    memset(&params, 0, sizeof(params));
+    params.passive = 0;
+    params.itvl = 0x0010;
+    params.window = 0x0010;
+    params.filter_duplicates = 1;
+
+    int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &params, joycon2_gap_event, NULL);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "ble_gap_disc failed rc=%d", rc);
+    } else {
+        ESP_LOGI(TAG, "Scanning for Joy-Con 2...");
+    }
+}
+
+static void joycon2_on_reset(int reason) {
+    ESP_LOGE(TAG, "NimBLE reset reason=%d", reason);
+}
+
+static void joycon2_on_sync(void) {
+    int rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d", rc);
+    }
+    ESP_LOGI(TAG, "BLE sync complete; own_addr_type=%u", s_own_addr_type);
+    joycon2_scan_start();
+}
+
+static void joycon2_host_task(void *param) {
+    (void)param;
+    nimble_port_run();
+    nimble_port_freertos_deinit();
+}
+
+void joycon2_ble_start(joycon2_state_cb_t cb) {
+    s_cb = cb;
+
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    }
+
+    ESP_ERROR_CHECK(esp_nimble_hci_and_controller_init());
+    nimble_port_init();
+
+    ble_svc_gap_init();
+    ble_svc_gatt_init();
+
+    ble_svc_gap_device_name_set("JoyCon2 Dongle");
+
+    ble_hs_cfg.reset_cb = joycon2_on_reset;
+    ble_hs_cfg.sync_cb = joycon2_on_sync;
+
+    nimble_port_freertos_init(joycon2_host_task);
+}

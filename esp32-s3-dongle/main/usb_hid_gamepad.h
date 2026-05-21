@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 typedef struct {
-    uint16_t buttons; // bits 0..15
+    uint32_t buttons; // bits 0..23 (24 buttons)
     uint8_t hat;      // 0..7, 8 = neutral
     int8_t lx;
     int8_t ly;
@@ -11,6 +11,13 @@ typedef struct {
     int8_t ry;
 } usb_gamepad_report_t;
 
+typedef struct {
+    uint8_t buttons; // bit0=left, bit1=right, bit2=middle
+    int8_t x;
+    int8_t y;
+    int8_t wheel;
+} usb_mouse_report_t;
+
 void usb_hid_gamepad_init(void);
 void usb_hid_gamepad_send(const usb_gamepad_report_t *report);
-
+void usb_hid_mouse_send(const usb_mouse_report_t *report);
