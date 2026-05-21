@@ -37,6 +37,7 @@ static uint16_t s_write_handle = 0;
 static uint16_t s_notify_handle = 0;
 static uint16_t s_notify_cccd_handle = 0;
 static bool s_subscribed = false;
+static bool s_direct_cccd_attempted = false;
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 
 static uint16_t read_le_u16(const uint8_t *buf) {
@@ -161,6 +162,30 @@ static void joycon2_send_init_commands(void) {
     }
 }
 
+static void joycon2_start_descriptor_fallback(void) {
+    s_notify_cccd_handle = 0;
+    ESP_LOGI(TAG, "Discovering descriptors (looking for CCCD) after notify handle=%u", s_notify_handle);
+    int rc = ble_gattc_disc_all_dscs(s_conn_handle, s_notify_handle + 1, 0xffff, joycon2_dsc_disc_cb, NULL);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "disc_all_dscs failed rc=%d", rc);
+    }
+}
+
+static void joycon2_write_cccd(uint16_t cccd_handle) {
+    uint8_t cccd_val[2] = {0x01, 0x00}; // notifications enabled
+    s_notify_cccd_handle = cccd_handle;
+    ESP_LOGI(TAG, "Writing CCCD handle=%u to enable notifications", s_notify_cccd_handle);
+    int rc = ble_gattc_write_flat(s_conn_handle, s_notify_cccd_handle, cccd_val, sizeof(cccd_val),
+                                  joycon2_cccd_write_cb, NULL);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "CCCD write failed rc=%d", rc);
+        if (s_direct_cccd_attempted) {
+            s_direct_cccd_attempted = false;
+            joycon2_start_descriptor_fallback();
+        }
+    }
+}
+
 static void joycon2_try_finish_setup(void) {
     if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
         return;
@@ -172,15 +197,10 @@ static void joycon2_try_finish_setup(void) {
         return;
     }
 
-    // Enable notifications by locating and writing the CCCD (0x2902) for the notify characteristic.
-    // Some ESP-IDF NimBLE builds don't provide a convenient `ble_gattc_subscribe()` wrapper.
-    s_notify_cccd_handle = 0;
-    ESP_LOGI(TAG, "Discovering descriptors (looking for CCCD) after notify handle=%u", s_notify_handle);
-    int rc = ble_gattc_disc_all_dscs(s_conn_handle, s_notify_handle + 1, 0xffff, joycon2_dsc_disc_cb, NULL);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "disc_all_dscs failed rc=%d", rc);
-        return;
-    }
+    // Most BLE stacks enable notifications by writing 0x0001 to the CCCD at
+    // characteristic value handle + 1. Descriptor discovery remains as fallback.
+    s_direct_cccd_attempted = true;
+    joycon2_write_cccd(s_notify_handle + 1);
 }
 
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
@@ -212,6 +232,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_notify_handle = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
+            s_direct_cccd_attempted = false;
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
             ESP_LOGI(TAG, "Connected; discovering characteristics...");
             // Discover all characteristics over full attribute range.
@@ -228,6 +249,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_notify_handle = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
+            s_direct_cccd_attempted = false;
             emit_status(JOYCON2_BLE_STATUS_DISCONNECTED);
             joycon2_scan_start();
             return 0;
@@ -272,6 +294,16 @@ static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
     } else if (ble_uuid_cmp(&chr->uuid.u, &kNotifyUUID.u) == 0) {
         s_notify_handle = chr->val_handle;
         ESP_LOGI(TAG, "Found notify characteristic handle=%u", s_notify_handle);
+    } else {
+        if (s_write_handle == 0 &&
+            (chr->properties & (BLE_GATT_CHR_F_WRITE_NO_RSP | BLE_GATT_CHR_F_WRITE))) {
+            s_write_handle = chr->val_handle;
+            ESP_LOGI(TAG, "Using fallback write characteristic handle=%u", s_write_handle);
+        }
+        if (s_notify_handle == 0 && (chr->properties & BLE_GATT_CHR_F_NOTIFY)) {
+            s_notify_handle = chr->val_handle;
+            ESP_LOGI(TAG, "Using fallback notify characteristic handle=%u", s_notify_handle);
+        }
     }
     return 0;
 }
@@ -288,13 +320,8 @@ static int joycon2_dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
             return 0;
         }
 
-        uint8_t cccd_val[2] = {0x01, 0x00}; // notifications enabled
-        ESP_LOGI(TAG, "Writing CCCD handle=%u to enable notifications", s_notify_cccd_handle);
-        int rc = ble_gattc_write_flat(s_conn_handle, s_notify_cccd_handle, cccd_val, sizeof(cccd_val),
-                                      joycon2_cccd_write_cb, NULL);
-        if (rc != 0) {
-            ESP_LOGW(TAG, "CCCD write failed rc=%d", rc);
-        }
+        s_direct_cccd_attempted = false;
+        joycon2_write_cccd(s_notify_cccd_handle);
         return 0;
     }
 
@@ -323,11 +350,16 @@ static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_err
 
     if (error->status != 0) {
         ESP_LOGW(TAG, "CCCD write cb status=%d", error->status);
+        if (s_direct_cccd_attempted) {
+            s_direct_cccd_attempted = false;
+            joycon2_start_descriptor_fallback();
+        }
         return 0;
     }
 
     ESP_LOGI(TAG, "Notifications enabled");
     s_subscribed = true;
+    s_direct_cccd_attempted = false;
     emit_status(JOYCON2_BLE_STATUS_SUBSCRIBED);
     joycon2_send_init_commands();
     return 0;
