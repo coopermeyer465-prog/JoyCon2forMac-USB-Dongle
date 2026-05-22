@@ -37,6 +37,8 @@ static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_write_handle = 0;
 static uint16_t s_notify_handle = 0;
 static uint16_t s_ack_handle = 0;
+static uint16_t s_first_notify_before_cmd = 0;
+static uint16_t s_first_notify_after_cmd = 0;
 static uint16_t s_notify_cccd_handle = 0;
 static bool s_subscribed = false;
 static bool s_waiting_for_ack_cccd = false;
@@ -120,6 +122,10 @@ static const ble_uuid128_t kNotifyUUID =
 static const ble_uuid128_t kNotifyUUIDAlt =
     BLE_UUID128_INIT(0xF9, 0xC0, 0xFC, 0x5F, 0x75, 0x32, 0x58, 0x82,
                      0x19, 0x46, 0x3E, 0xEC, 0x6C, 0x86, 0x92, 0x74);
+
+static const ble_uuid128_t kNotifyUUIDMac =
+    BLE_UUID128_INIT(0xD2, 0x7F, 0xDF, 0x09, 0x8F, 0x11, 0x2F, 0x81,
+                     0x28, 0xAD, 0xFE, 0x49, 0xBE, 0xE9, 0x7D, 0xAB);
 
 static void joycon2_scan_start(void);
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
@@ -271,6 +277,16 @@ static void joycon2_try_finish_setup(void) {
     if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
         return;
     }
+    if (s_notify_handle == 0) {
+        s_notify_handle = s_first_notify_before_cmd ? s_first_notify_before_cmd : s_first_notify_after_cmd;
+        if (s_notify_handle != 0) {
+            ESP_LOGI(TAG, "Using discovered input notify fallback handle=%u", s_notify_handle);
+        }
+    }
+    if (s_ack_handle == 0 && s_first_notify_after_cmd != 0 && s_first_notify_after_cmd != s_notify_handle) {
+        s_ack_handle = s_first_notify_after_cmd;
+        ESP_LOGI(TAG, "Using discovered ACK notify fallback handle=%u", s_ack_handle);
+    }
     if (s_write_handle == 0 || s_notify_handle == 0) {
         return;
     }
@@ -316,6 +332,8 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_write_handle = 0;
             s_notify_handle = 0;
             s_ack_handle = 0;
+            s_first_notify_before_cmd = 0;
+            s_first_notify_after_cmd = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
             s_waiting_for_ack_cccd = false;
@@ -336,6 +354,8 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_write_handle = 0;
             s_notify_handle = 0;
             s_ack_handle = 0;
+            s_first_notify_before_cmd = 0;
+            s_first_notify_after_cmd = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
             s_waiting_for_ack_cccd = false;
@@ -402,7 +422,8 @@ static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
         s_write_handle = chr->val_handle;
         ESP_LOGI(TAG, "Found write characteristic handle=%u", s_write_handle);
     } else if (ble_uuid_cmp(&chr->uuid.u, &kNotifyUUID.u) == 0 ||
-               ble_uuid_cmp(&chr->uuid.u, &kNotifyUUIDAlt.u) == 0) {
+               ble_uuid_cmp(&chr->uuid.u, &kNotifyUUIDAlt.u) == 0 ||
+               ble_uuid_cmp(&chr->uuid.u, &kNotifyUUIDMac.u) == 0) {
         s_notify_handle = chr->val_handle;
         ESP_LOGI(TAG, "Found notify characteristic handle=%u", s_notify_handle);
     } else {
@@ -416,6 +437,15 @@ static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
             (chr->properties & BLE_GATT_CHR_F_NOTIFY)) {
             s_ack_handle = chr->val_handle;
             ESP_LOGI(TAG, "Using fallback ACK characteristic handle=%u", s_ack_handle);
+        }
+    }
+    if (chr->properties & BLE_GATT_CHR_F_NOTIFY) {
+        if (s_write_handle == 0 && s_first_notify_before_cmd == 0) {
+            s_first_notify_before_cmd = chr->val_handle;
+            ESP_LOGI(TAG, "Remembering pre-command notify fallback handle=%u", s_first_notify_before_cmd);
+        } else if (s_write_handle != 0 && s_first_notify_after_cmd == 0) {
+            s_first_notify_after_cmd = chr->val_handle;
+            ESP_LOGI(TAG, "Remembering post-command notify fallback handle=%u", s_first_notify_after_cmd);
         }
     }
     return 0;
