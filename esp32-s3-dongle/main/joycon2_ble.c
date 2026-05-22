@@ -528,14 +528,6 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (!notify_ctx) {
                 return 0;
             }
-            bool expected_handle = event->notify_rx.attr_handle == notify_ctx->notify_handle ||
-                                   event->notify_rx.attr_handle == notify_ctx->ack_handle;
-            if (!expected_handle) {
-                emit_status(JOYCON2_BLE_STATUS_NOTIFY_OTHER);
-            }
-            if (event->notify_rx.attr_handle != notify_ctx->notify_handle) {
-                return 0;
-            }
             uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
             uint8_t packet[96];
             if (len > sizeof(packet)) {
@@ -547,11 +539,19 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
 
             joycon2_state_t st;
             if (parse_packet(packet, len, notify_ctx->side, &st) && s_cb) {
+                if (event->notify_rx.attr_handle != notify_ctx->notify_handle) {
+                    ESP_LOGI(TAG, "[%s] Promoting notify handle %u -> %u",
+                             notify_ctx->name, notify_ctx->notify_handle, event->notify_rx.attr_handle);
+                    notify_ctx->notify_handle = event->notify_rx.attr_handle;
+                }
                 notify_ctx->notifying = true;
                 emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
                 s_cb(&st);
             } else {
-                emit_status(JOYCON2_BLE_STATUS_PACKET_REJECTED);
+                bool expected_handle = event->notify_rx.attr_handle == notify_ctx->notify_handle ||
+                                       event->notify_rx.attr_handle == notify_ctx->ack_handle;
+                emit_status(expected_handle ? JOYCON2_BLE_STATUS_PACKET_REJECTED
+                                            : JOYCON2_BLE_STATUS_NOTIFY_OTHER);
             }
             return 0;
         }
