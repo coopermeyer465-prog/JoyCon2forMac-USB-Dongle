@@ -67,9 +67,9 @@ static void parse_stick_3b(const uint8_t *p, uint16_t *x, uint16_t *y) {
     *y = (uint16_t)((v >> 12) & 0x0FFF);
 }
 
-static void parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) {
+static bool parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) {
     if (!data || !out || len < 0x3E) {
-        return;
+        return false;
     }
 
     memset(out, 0, sizeof(*out));
@@ -83,6 +83,7 @@ static void parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) 
 
     out->mouse_x = read_le_i16(&data[0x10]);
     out->mouse_y = read_le_i16(&data[0x12]);
+    return true;
 }
 
 static const ble_uuid128_t kWriteUUID =
@@ -259,9 +260,8 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
                 return 0;
             }
             joycon2_state_t st;
-            parse_packet(event->notify_rx.om->om_data, event->notify_rx.om->om_len, &st);
-            emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
-            if (s_cb) {
+            if (parse_packet(event->notify_rx.om->om_data, event->notify_rx.om->om_len, &st) && s_cb) {
+                emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
                 s_cb(&st);
             }
             return 0;
