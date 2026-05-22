@@ -2,7 +2,7 @@
 
 # Enable TinyUSB device stack.
 # CONFIG_TINYUSB_CDC_ENABLED is not set
-CONFIG_TINYUSB_HID_COUNT=1
+CONFIG_TINYUSB_HID_COUNT=2
 
 # NimBLE (preferred BLE host).
 CONFIG_BT_ENABLED=y

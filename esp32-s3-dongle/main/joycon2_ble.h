@@ -11,6 +11,8 @@ typedef struct {
     uint16_t right_y;
     int16_t mouse_x;
     int16_t mouse_y;
+    int16_t mouse_unk;
+    int16_t mouse_distance;
     uint8_t trigger_l;
     uint8_t trigger_r;
     bool is_right;

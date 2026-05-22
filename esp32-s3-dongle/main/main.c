@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <math.h>
+#include <string.h>
+#include <stdlib.h>
 
 #include "esp_log.h"
 #include "driver/gpio.h"
@@ -185,68 +187,165 @@ static int8_t clamp_i16_to_i8(int v) {
     return (int8_t)v;
 }
 
+typedef struct {
+    joycon2_state_t state;
+    bool valid;
+    bool has_mouse_sample;
+    int16_t last_mouse_x;
+    int16_t last_mouse_y;
+    double smooth_mouse_x;
+    double smooth_mouse_y;
+    TickType_t mouse_mode_until;
+} device_slot_t;
+
+static device_slot_t s_left;
+static device_slot_t s_right;
+
+static bool is_right_state(const joycon2_state_t *st) {
+    if (st->is_right) return true;
+    const uint32_t right_mask = 0x0000FF00u | BTN_R | BTN_ZR | BTN_RS | BTN_START | BTN_HOME | BTN_CHAT;
+    return (st->buttons & right_mask) != 0;
+}
+
+static bool is_left_state(const joycon2_state_t *st) {
+    if (st->is_left) return true;
+    const uint32_t left_mask = 0xFF000000u | BTN_L | BTN_ZL | BTN_LS | BTN_SELECT | BTN_CAMERA;
+    return (st->buttons & left_mask) != 0;
+}
+
+static uint32_t merged_buttons(void) {
+    uint32_t buttons = 0;
+    if (s_left.valid) buttons |= s_left.state.buttons;
+    if (s_right.valid) buttons |= s_right.state.buttons;
+    return buttons;
+}
+
+static uint16_t latest_left_x(void) {
+    return s_left.valid ? s_left.state.left_x : 2047;
+}
+
+static uint16_t latest_left_y(void) {
+    return s_left.valid ? s_left.state.left_y : 2047;
+}
+
+static uint16_t latest_right_x(void) {
+    return s_right.valid ? s_right.state.right_x : 2047;
+}
+
+static uint16_t latest_right_y(void) {
+    return s_right.valid ? s_right.state.right_y : 2047;
+}
+
+static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
+    if (!slot || !slot->valid || !mouse) {
+        return false;
+    }
+
+    joycon2_state_t *st = &slot->state;
+    bool mouse_mode_hint = st->mouse_distance != 0 || st->mouse_unk != 0;
+    int dx = 0;
+    int dy = 0;
+
+    if (!slot->has_mouse_sample) {
+        slot->last_mouse_x = st->mouse_x;
+        slot->last_mouse_y = st->mouse_y;
+        slot->has_mouse_sample = true;
+    } else {
+        dx = (int)st->mouse_x - (int)slot->last_mouse_x;
+        dy = (int)st->mouse_y - (int)slot->last_mouse_y;
+        slot->last_mouse_x = st->mouse_x;
+        slot->last_mouse_y = st->mouse_y;
+    }
+
+    // Optical mode reports real deltas here. Ignore tiny drift and impossible jumps.
+    if (abs(dx) > 80 || abs(dy) > 80) {
+        dx = 0;
+        dy = 0;
+    }
+    if (abs(dx) <= 1) dx = 0;
+    if (abs(dy) <= 1) dy = 0;
+
+    if (mouse_mode_hint || dx != 0 || dy != 0) {
+        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
+    }
+
+    bool active = slot->mouse_mode_until != 0 &&
+                  (int32_t)(slot->mouse_mode_until - xTaskGetTickCount()) > 0;
+    if (!active) {
+        slot->smooth_mouse_x = 0.0;
+        slot->smooth_mouse_y = 0.0;
+        return false;
+    }
+
+    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.65) + ((double)dx * 0.35);
+    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.65) + ((double)dy * 0.35);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 1.8));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 1.8));
+
+    // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
+    if (st->buttons & BTN_R) mouse->buttons |= 0x01;
+    if (st->buttons & BTN_ZR) mouse->buttons |= 0x02;
+    return true;
+}
+
 static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
 
     // Any incoming state indicates we are connected + receiving notifications.
     s_led_mode = LED_MODE_NOTIFICATIONS;
 
-    // "Mouse mode" is a simple modifier: hold Right Stick press (RS) to enable mouse reports.
-    // This keeps the dongle gamepad-first while still allowing cursor navigation without a Mac app.
-    bool rs = (st->buttons & BTN_RS) != 0;
-    bool mouse_mode = rs;
+    if (is_right_state(st) || (!is_left_state(st) && !s_right.valid)) {
+        s_right.state = *st;
+        s_right.valid = true;
+    } else {
+        s_left.state = *st;
+        s_left.valid = true;
+    }
+
+    usb_mouse_report_t m = {0};
+    bool mouse_mode = right_mouse_active(&s_right, &m);
 
     usb_gamepad_report_t r = {0};
-    r.hat = hat_from_buttons(st->buttons);
+    uint32_t buttons = merged_buttons();
+
+    // In right Joy-Con mouse mode, R/ZR are mouse buttons, not gamepad buttons.
+    if (mouse_mode) {
+        buttons &= ~(BTN_R | BTN_ZR);
+    }
+
+    r.hat = hat_from_buttons(buttons);
 
     // Map common buttons to the first 8 bits, using the Joy-Con bit masks.
     // A/B/X/Y:
-    if (st->buttons & BTN_A) r.buttons |= (1u << 0); // A
-    if (st->buttons & BTN_B) r.buttons |= (1u << 1); // B
-    if (st->buttons & BTN_X) r.buttons |= (1u << 2); // X
-    if (st->buttons & BTN_Y) r.buttons |= (1u << 3); // Y
+    if (buttons & BTN_A) r.buttons |= (1u << 0); // A
+    if (buttons & BTN_B) r.buttons |= (1u << 1); // B
+    if (buttons & BTN_X) r.buttons |= (1u << 2); // X
+    if (buttons & BTN_Y) r.buttons |= (1u << 3); // Y
     // L/R/ZL/ZR:
-    if (st->buttons & BTN_L) r.buttons |= (1u << 4); // L
-    if (st->buttons & BTN_R) r.buttons |= (1u << 5); // R
-    if (st->buttons & BTN_ZL) r.buttons |= (1u << 6); // ZL
-    if (st->buttons & BTN_ZR) r.buttons |= (1u << 7); // ZR
+    if (buttons & BTN_L) r.buttons |= (1u << 4); // L
+    if (buttons & BTN_R) r.buttons |= (1u << 5); // R
+    if (buttons & BTN_ZL) r.buttons |= (1u << 6); // ZL
+    if (buttons & BTN_ZR) r.buttons |= (1u << 7); // ZR
 
     // Secondary buttons (bits 8..18).
-    if (st->buttons & BTN_LS) r.buttons |= (1u << 8);       // LS
-    if (st->buttons & BTN_RS) r.buttons |= (1u << 9);       // RS
-    if (st->buttons & BTN_SELECT) r.buttons |= (1u << 10);  // Minus
-    if (st->buttons & BTN_START) r.buttons |= (1u << 11);   // Plus
-    if (st->buttons & BTN_HOME) r.buttons |= (1u << 12);    // Home
-    if (st->buttons & BTN_CAMERA) r.buttons |= (1u << 13);  // Capture
-    if (st->buttons & BTN_CHAT) r.buttons |= (1u << 14);    // GameChat
-    if (st->buttons & BTN_SL_L) r.buttons |= (1u << 15);    // SL(L)
-    if (st->buttons & BTN_SR_L) r.buttons |= (1u << 16);    // SR(L)
-    if (st->buttons & BTN_SL_R) r.buttons |= (1u << 17);    // SL(R)
-    if (st->buttons & BTN_SR_R) r.buttons |= (1u << 18);    // SR(R)
+    if (buttons & BTN_LS) r.buttons |= (1u << 8);       // LS
+    if (buttons & BTN_RS) r.buttons |= (1u << 9);       // RS
+    if (buttons & BTN_SELECT) r.buttons |= (1u << 10);  // Minus
+    if (buttons & BTN_START) r.buttons |= (1u << 11);   // Plus
+    if (buttons & BTN_HOME) r.buttons |= (1u << 12);    // Home
+    if (buttons & BTN_CAMERA) r.buttons |= (1u << 13);  // Capture
+    if (buttons & BTN_CHAT) r.buttons |= (1u << 14);    // GameChat
+    if (buttons & BTN_SL_L) r.buttons |= (1u << 15);    // SL(L)
+    if (buttons & BTN_SR_L) r.buttons |= (1u << 16);    // SR(L)
+    if (buttons & BTN_SL_R) r.buttons |= (1u << 17);    // SL(R)
+    if (buttons & BTN_SR_R) r.buttons |= (1u << 18);    // SR(R)
 
-    r.lx = normalize_12bit_axis(st->left_x, false);
-    r.ly = normalize_12bit_axis(st->left_y, true);
-    r.rx = normalize_12bit_axis(st->right_x, false);
-    r.ry = normalize_12bit_axis(st->right_y, true);
+    r.lx = normalize_12bit_axis(latest_left_x(), false);
+    r.ly = normalize_12bit_axis(latest_left_y(), true);
+    r.rx = normalize_12bit_axis(latest_right_x(), false);
+    r.ry = normalize_12bit_axis(latest_right_y(), true);
 
     usb_hid_gamepad_send(&r);
-
-    // Optional mouse output. Use right stick while RS is held.
-    usb_mouse_report_t m = {0};
-    if (mouse_mode) {
-        // Convert stick to relative mouse deltas. Keep it conservative; users can tune later.
-        const int kStickToMouse = 8; // higher = faster cursor
-        int dx = (int)r.rx / kStickToMouse;
-        int dy = (int)r.ry / kStickToMouse;
-        m.x = clamp_i16_to_i8(dx);
-        m.y = clamp_i16_to_i8(dy);
-
-        // Mouse click mappings in mouse mode:
-        // - R  -> left click (drag-select capable)
-        // - ZR -> right click
-        if (st->buttons & BTN_R) m.buttons |= 0x01;
-        if (st->buttons & BTN_ZR) m.buttons |= 0x02;
-    }
     usb_hid_mouse_send(&m);
 }
 
