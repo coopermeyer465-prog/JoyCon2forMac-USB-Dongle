@@ -12,20 +12,20 @@
 static const char *TAG = "usb_hid";
 
 enum {
-    REPORT_ID_GAMEPAD = 1,
-    REPORT_ID_MOUSE = 2,
+    ITF_NUM_GAMEPAD = 0,
+    ITF_NUM_MOUSE,
+    ITF_NUM_TOTAL,
 };
 
 // Explicit HID configuration descriptor. This is intentionally HID-only because
 // the CDC composite variant was unreliable on the XIAO ESP32-S3 USB-C port.
-#define TUSB_DESC_TOTAL_LEN      (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN)
+#define TUSB_DESC_TOTAL_LEN      (TUD_CONFIG_DESC_LEN + TUD_HID_DESC_LEN + TUD_HID_DESC_LEN)
 
-// Report layout matches the macOS app's virtual gamepad: 16 buttons + hat + 4 axes.
-static const uint8_t hid_report_descriptor[] = {
+// Simple, report-ID-free gamepad descriptor for broad Web Gamepad compatibility.
+static const uint8_t gamepad_report_descriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
     0x09, 0x05,        // Usage (Game Pad)
     0xA1, 0x01,        // Collection (Application)
-    0x85, REPORT_ID_GAMEPAD, //   Report ID
     0x05, 0x09,        //   Usage Page (Button)
     0x19, 0x01,        //   Usage Minimum (Button 1)
     0x29, 0x18,        //   Usage Maximum (Button 24)
@@ -57,13 +57,12 @@ static const uint8_t hid_report_descriptor[] = {
     0x95, 0x04,        //   Report Count (4)
     0x81, 0x02,        //   Input (Data,Var,Abs)
     0xC0               // End Collection
+};
 
-    ,
-    // Mouse (relative), for optional cursor mode while still presenting as a normal gamepad.
+static const uint8_t mouse_report_descriptor[] = {
     0x05, 0x01,        // Usage Page (Generic Desktop)
     0x09, 0x02,        // Usage (Mouse)
     0xA1, 0x01,        // Collection (Application)
-    0x85, REPORT_ID_MOUSE, //   Report ID
     0x09, 0x01,        //   Usage (Pointer)
     0xA1, 0x00,        //   Collection (Physical)
     0x05, 0x09,        //     Usage Page (Button)
@@ -99,25 +98,21 @@ static const char *hid_string_descriptor[] = {
     "JoyCon2forMac",       // 1: Manufacturer
     "JoyCon2 USB Dongle",  // 2: Product
     s_serial_str,          // 3: Serial
-    "Gamepad + Mouse",     // 4: HID Interface
+    "Gamepad",             // 4: HID Interface
+    "Mouse",               // 5: HID Interface
 };
 
-enum {
-    ITF_NUM_HID = 0,
-    ITF_NUM_TOTAL,
-};
-
-// 1 configuration, 1 HID interface. The HID interface uses multiple report IDs
-// (gamepad + mouse) in one report descriptor.
+// Two separate HID interfaces. This enumerates more like normal hardware:
+// one gamepad and one mouse, instead of a composite report-ID interface.
 static const uint8_t hid_configuration_descriptor[] = {
     TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, TUSB_DESC_TOTAL_LEN, TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
-    TUD_HID_DESCRIPTOR(ITF_NUM_HID, 4, false, sizeof(hid_report_descriptor), 0x81, 16, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_GAMEPAD, 4, false, sizeof(gamepad_report_descriptor), 0x81, 16, 1),
+    TUD_HID_DESCRIPTOR(ITF_NUM_MOUSE, 5, false, sizeof(mouse_report_descriptor), 0x82, 16, 1),
 };
 
 // TinyUSB callbacks (minimal).
 uint8_t const *tud_hid_descriptor_report_cb(uint8_t instance) {
-    (void)instance;
-    return hid_report_descriptor;
+    return instance == ITF_NUM_MOUSE ? mouse_report_descriptor : gamepad_report_descriptor;
 }
 
 uint16_t tud_hid_get_report_cb(uint8_t instance, uint8_t report_id, hid_report_type_t report_type,
@@ -160,7 +155,7 @@ void usb_hid_gamepad_init(void) {
 }
 
 void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {
-    if (!tud_hid_ready() || !report) {
+    if (!tud_hid_n_ready(ITF_NUM_GAMEPAD) || !report) {
         return;
     }
     uint8_t buf[8];
@@ -172,11 +167,11 @@ void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {
     buf[5] = (uint8_t)report->ly;
     buf[6] = (uint8_t)report->rx;
     buf[7] = (uint8_t)report->ry;
-    tud_hid_report(REPORT_ID_GAMEPAD, buf, sizeof(buf));
+    tud_hid_n_report(ITF_NUM_GAMEPAD, 0, buf, sizeof(buf));
 }
 
 void usb_hid_mouse_send(const usb_mouse_report_t *report) {
-    if (!tud_hid_ready() || !report) {
+    if (!tud_hid_n_ready(ITF_NUM_MOUSE) || !report) {
         return;
     }
     uint8_t buf[4];
@@ -184,5 +179,5 @@ void usb_hid_mouse_send(const usb_mouse_report_t *report) {
     buf[1] = (uint8_t)report->x;
     buf[2] = (uint8_t)report->y;
     buf[3] = (uint8_t)report->wheel;
-    tud_hid_report(REPORT_ID_MOUSE, buf, sizeof(buf));
+    tud_hid_n_report(ITF_NUM_MOUSE, 0, buf, sizeof(buf));
 }
