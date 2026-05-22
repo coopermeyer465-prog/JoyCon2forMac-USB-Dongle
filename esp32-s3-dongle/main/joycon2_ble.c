@@ -70,15 +70,16 @@ static void parse_stick_3b(const uint8_t *p, uint16_t *x, uint16_t *y) {
 }
 
 static bool parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) {
-    // The macOS app accepts Joy-Con 2 input packets at 0x3C bytes. Some optional
-    // fields live after that, so guard them individually instead of dropping
-    // the whole packet.
-    if (!data || !out || len < 0x3C) {
+    // Buttons and sticks are near the start of the report. Accept shorter
+    // notifications and leave optional later fields as zero.
+    if (!data || !out || len < 0x10) {
         return false;
     }
 
     memset(out, 0, sizeof(*out));
-    out->buttons = read_le_u32(&data[3]);
+    if (len >= 7) {
+        out->buttons = read_le_u32(&data[3]);
+    }
     if (len > 0x3C) {
         out->trigger_l = data[0x3C];
     }
@@ -87,11 +88,19 @@ static bool parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) 
     }
 
     // Stick parse matches macOS version: 12-bit packed pairs in 3 bytes.
-    parse_stick_3b(&data[0x0A], &out->left_x, &out->left_y);
-    parse_stick_3b(&data[0x0D], &out->right_x, &out->right_y);
+    if (len >= 0x0D) {
+        parse_stick_3b(&data[0x0A], &out->left_x, &out->left_y);
+    }
+    if (len >= 0x10) {
+        parse_stick_3b(&data[0x0D], &out->right_x, &out->right_y);
+    }
 
-    out->mouse_x = read_le_i16(&data[0x10]);
-    out->mouse_y = read_le_i16(&data[0x12]);
+    if (len >= 0x12) {
+        out->mouse_x = read_le_i16(&data[0x10]);
+    }
+    if (len >= 0x14) {
+        out->mouse_y = read_le_i16(&data[0x12]);
+    }
     return true;
 }
 
