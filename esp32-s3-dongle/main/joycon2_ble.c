@@ -38,6 +38,7 @@ static uint16_t s_notify_handle = 0;
 static uint16_t s_notify_cccd_handle = 0;
 static bool s_subscribed = false;
 static bool s_direct_cccd_attempted = false;
+static bool s_init_task_running = false;
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 
 static uint16_t read_le_u16(const uint8_t *buf) {
@@ -109,6 +110,7 @@ static int joycon2_dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
                                uint16_t chr_val_handle, const struct ble_gatt_dsc *dsc, void *arg);
 static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                                  struct ble_gatt_attr *attr, void *arg);
+static void joycon2_write_cccd(uint16_t cccd_handle);
 
 static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc) {
     struct ble_hs_adv_fields fields;
@@ -145,7 +147,7 @@ static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc) {
     return false;
 }
 
-static void joycon2_send_init_commands(void) {
+static void joycon2_send_init_commands_now(void) {
     if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE || s_write_handle == 0) {
         ESP_LOGW(TAG, "Cannot send init commands yet (conn=%u write_handle=%u)", s_conn_handle, s_write_handle);
         return;
@@ -167,6 +169,35 @@ static void joycon2_send_init_commands(void) {
     rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_handle, cmd2, sizeof(cmd2));
     if (rc != 0) {
         ESP_LOGW(TAG, "write_no_rsp cmd2 failed rc=%d", rc);
+    }
+}
+
+static void joycon2_init_task(void *param) {
+    (void)param;
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    joycon2_send_init_commands_now();
+
+    // Match the macOS app's "enable notifications again after a short delay"
+    // behavior. This helps if the Joy-Con only starts streaming after init.
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE && s_notify_handle != 0) {
+        s_direct_cccd_attempted = true;
+        joycon2_write_cccd(s_notify_handle + 1);
+    }
+
+    s_init_task_running = false;
+    vTaskDelete(NULL);
+}
+
+static void joycon2_schedule_init_commands(void) {
+    if (s_init_task_running) {
+        return;
+    }
+    s_init_task_running = true;
+    if (xTaskCreate(joycon2_init_task, "joycon_init", 4096, NULL, 5, NULL) != pdPASS) {
+        s_init_task_running = false;
+        ESP_LOGW(TAG, "failed to create init task");
     }
 }
 
@@ -241,6 +272,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_notify_cccd_handle = 0;
             s_subscribed = false;
             s_direct_cccd_attempted = false;
+            s_init_task_running = false;
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
             ESP_LOGI(TAG, "Connected; discovering characteristics...");
             // Discover all characteristics over full attribute range.
@@ -258,6 +290,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_notify_cccd_handle = 0;
             s_subscribed = false;
             s_direct_cccd_attempted = false;
+            s_init_task_running = false;
             emit_status(JOYCON2_BLE_STATUS_DISCONNECTED);
             joycon2_scan_start();
             return 0;
@@ -368,7 +401,7 @@ static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_err
     s_subscribed = true;
     s_direct_cccd_attempted = false;
     emit_status(JOYCON2_BLE_STATUS_SUBSCRIBED);
-    joycon2_send_init_commands();
+    joycon2_schedule_init_commands();
     return 0;
 }
 
