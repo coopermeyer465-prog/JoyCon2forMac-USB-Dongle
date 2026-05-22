@@ -243,24 +243,15 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     }
 
     joycon2_state_t *st = &slot->state;
+    if (!st->is_right) {
+        return false;
+    }
+
     bool manual_mouse_fallback = (st->buttons & BTN_RS) != 0;
-    bool small_relative_report = st->mouse_x >= -127 && st->mouse_x <= 127 &&
-                                 st->mouse_y >= -127 && st->mouse_y <= 127 &&
-                                 (st->mouse_x != 0 || st->mouse_y != 0);
-    bool mouse_mode_hint = manual_mouse_fallback ||
-                           small_relative_report ||
-                           st->mouse_distance != 0 ||
-                           st->mouse_unk != 0;
     int dx = 0;
     int dy = 0;
 
-    if (small_relative_report) {
-        dx = st->mouse_x;
-        dy = st->mouse_y;
-        slot->last_mouse_x = st->mouse_x;
-        slot->last_mouse_y = st->mouse_y;
-        slot->has_mouse_sample = true;
-    } else if (!slot->has_mouse_sample) {
+    if (!slot->has_mouse_sample) {
         slot->last_mouse_x = st->mouse_x;
         slot->last_mouse_y = st->mouse_y;
         slot->has_mouse_sample = true;
@@ -279,8 +270,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     if (abs(dx) <= 1) dx = 0;
     if (abs(dy) <= 1) dy = 0;
 
-    if (mouse_mode_hint || dx != 0 || dy != 0) {
-        if (dx != 0 || dy != 0 || small_relative_report) {
+    if (manual_mouse_fallback || dx != 0 || dy != 0) {
+        if (dx != 0 || dy != 0) {
             slot->last_optical_motion_at = xTaskGetTickCount();
         }
         slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
@@ -326,11 +317,15 @@ static void on_joycon_state(const joycon2_state_t *st) {
     // Any incoming state indicates we are connected + receiving notifications.
     s_led_mode = LED_MODE_NOTIFICATIONS;
 
-    if (is_right_state(st) || (!is_left_state(st) && !s_right.valid)) {
+    if (is_right_state(st)) {
         s_right.state = *st;
+        s_right.state.is_right = true;
+        s_right.state.is_left = false;
         s_right.valid = true;
-    } else {
+    } else if (is_left_state(st)) {
         s_left.state = *st;
+        s_left.state.is_left = true;
+        s_left.state.is_right = false;
         s_left.valid = true;
     }
 

@@ -544,6 +544,11 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
                              notify_ctx->name, notify_ctx->notify_handle, event->notify_rx.attr_handle);
                     notify_ctx->notify_handle = event->notify_rx.attr_handle;
                 }
+                if (st.is_right) {
+                    notify_ctx->side = JOYCON_SIDE_RIGHT;
+                } else if (st.is_left) {
+                    notify_ctx->side = JOYCON_SIDE_LEFT;
+                }
                 notify_ctx->notifying = true;
                 emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
                 s_cb(&st);
