@@ -71,15 +71,18 @@ static void parse_stick_3b(const uint8_t *p, uint16_t *x, uint16_t *y) {
 
 static bool parse_packet(const uint8_t *data, size_t len, joycon2_state_t *out) {
     // Buttons and sticks are near the start of the report. Accept shorter
-    // notifications and leave optional later fields as zero.
-    if (!data || !out || len < 0x10) {
+    // notifications, but default missing sticks to center so USB reports do not
+    // look like a hard top-left stick deflection.
+    if (!data || !out || len < 7) {
         return false;
     }
 
     memset(out, 0, sizeof(*out));
-    if (len >= 7) {
-        out->buttons = read_le_u32(&data[3]);
-    }
+    out->left_x = 2047;
+    out->left_y = 2047;
+    out->right_x = 2047;
+    out->right_y = 2047;
+    out->buttons = read_le_u32(&data[3]);
     if (len > 0x3C) {
         out->trigger_l = data[0x3C];
     }
@@ -306,8 +309,14 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             return 0;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {
+            bool expected_handle = event->notify_rx.attr_handle == s_notify_handle;
+            if (!expected_handle) {
+                emit_status(JOYCON2_BLE_STATUS_NOTIFY_OTHER);
+            }
+
             if (event->notify_rx.attr_handle != s_notify_handle) {
-                return 0;
+                ESP_LOGD(TAG, "Notification on non-primary handle=%u primary=%u",
+                         event->notify_rx.attr_handle, s_notify_handle);
             }
             uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
             uint8_t packet[96];
@@ -323,6 +332,8 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (parse_packet(packet, len, &st) && s_cb) {
                 emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
                 s_cb(&st);
+            } else {
+                emit_status(JOYCON2_BLE_STATUS_PACKET_REJECTED);
             }
             return 0;
         }

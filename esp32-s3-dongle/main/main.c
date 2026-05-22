@@ -22,6 +22,8 @@ typedef enum {
     LED_MODE_FOUND,
     LED_MODE_CONNECTED,
     LED_MODE_SUBSCRIBED,
+    LED_MODE_NOTIFY_OTHER,
+    LED_MODE_PACKET_REJECTED,
     LED_MODE_NOTIFICATIONS,
 } led_mode_t;
 
@@ -71,6 +73,19 @@ static void status_led_blink_task(void *param) {
                 status_led_pulse(80, 120);
                 status_led_pulse(80, 520);
                 break;
+            case LED_MODE_NOTIFY_OTHER:
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 520);
+                break;
+            case LED_MODE_PACKET_REJECTED:
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 120);
+                status_led_pulse(80, 520);
+                break;
             case LED_MODE_NOTIFICATIONS:
                 status_led_set(true);
                 vTaskDelay(pdMS_TO_TICKS(1000));
@@ -93,6 +108,12 @@ static void on_ble_status(joycon2_ble_status_t status) {
             break;
         case JOYCON2_BLE_STATUS_SUBSCRIBED:
             s_led_mode = LED_MODE_SUBSCRIBED;
+            break;
+        case JOYCON2_BLE_STATUS_NOTIFY_OTHER:
+            s_led_mode = LED_MODE_NOTIFY_OTHER;
+            break;
+        case JOYCON2_BLE_STATUS_PACKET_REJECTED:
+            s_led_mode = LED_MODE_PACKET_REJECTED;
             break;
         case JOYCON2_BLE_STATUS_NOTIFYING:
             s_led_mode = LED_MODE_NOTIFICATIONS;
