@@ -204,6 +204,24 @@ static bool parse_packet(const uint8_t *data, size_t len, joycon_side_t side, jo
     if (len >= 0x18) {
         out->mouse_distance = read_le_i16(&data[0x16]);
     }
+    if (len >= 0x32) {
+        out->accel_x = read_le_i16(&data[0x30]);
+    }
+    if (len >= 0x34) {
+        out->accel_y = read_le_i16(&data[0x32]);
+    }
+    if (len >= 0x36) {
+        out->accel_z = read_le_i16(&data[0x34]);
+    }
+    if (len >= 0x38) {
+        out->gyro_x = read_le_i16(&data[0x36]);
+    }
+    if (len >= 0x3A) {
+        out->gyro_y = read_le_i16(&data[0x38]);
+    }
+    if (len >= 0x3C) {
+        out->gyro_z = read_le_i16(&data[0x3A]);
+    }
     infer_side_from_buttons(out, side);
     return true;
 }

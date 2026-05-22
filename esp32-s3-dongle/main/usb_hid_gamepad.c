@@ -135,8 +135,8 @@ void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {
     buf[1] = (uint8_t)report->ly; // Y
     buf[2] = (uint8_t)report->rx; // Z
     buf[3] = (uint8_t)report->ry; // Rz
-    buf[4] = 0;                   // Rx
-    buf[5] = 0;                   // Ry
+    buf[4] = (uint8_t)report->gyro_x; // Rx: gyro X, for Steam generic axis mapping
+    buf[5] = (uint8_t)report->gyro_y; // Ry: gyro Y, for Steam generic axis mapping
     buf[6] = report->hat;         // 0=centered, 1=up ... 8=up-left
     buf[7] = (uint8_t)(report->buttons & 0xFF);
     buf[8] = (uint8_t)((report->buttons >> 8) & 0xFF);

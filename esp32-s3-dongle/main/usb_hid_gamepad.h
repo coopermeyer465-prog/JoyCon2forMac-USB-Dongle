@@ -9,6 +9,8 @@ typedef struct {
     int8_t ly;
     int8_t rx;
     int8_t ry;
+    int8_t gyro_x;
+    int8_t gyro_y;
 } usb_gamepad_report_t;
 
 typedef struct {

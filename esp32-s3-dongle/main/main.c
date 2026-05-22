@@ -158,6 +158,18 @@ static int8_t normalize_12bit_axis(uint16_t v, bool invert) {
     return (int8_t)scaled;
 }
 
+static int8_t normalize_motion_axis(int16_t v, bool invert) {
+    // IMU values vary by mode/firmware; scale conservatively for generic HID axes.
+    double n = (double)v / 8192.0;
+    if (n < -1.0) n = -1.0;
+    if (n > 1.0) n = 1.0;
+    if (invert) n = -n;
+    int scaled = (int)llround(n * 127.0);
+    if (scaled < -127) scaled = -127;
+    if (scaled > 127) scaled = 127;
+    return (int8_t)scaled;
+}
+
 static uint8_t hat_from_buttons(uint32_t buttons) {
     // Button bit masks match the macOS parser.
     const uint32_t UP = 0x02000000;
@@ -368,6 +380,10 @@ static void on_joycon_state(const joycon2_state_t *st) {
     r.ly = normalize_12bit_axis(latest_left_y(), true);
     r.rx = normalize_12bit_axis(latest_right_x(), false);
     r.ry = normalize_12bit_axis(latest_right_y(), true);
+    if (s_right.valid) {
+        r.gyro_x = normalize_motion_axis(s_right.state.gyro_y, false);
+        r.gyro_y = normalize_motion_axis(s_right.state.gyro_x, true);
+    }
 
     usb_hid_gamepad_send(&r);
     usb_hid_mouse_send(&m);
