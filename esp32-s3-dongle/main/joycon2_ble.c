@@ -13,6 +13,7 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/util/util.h"
+#include "os/os_mbuf.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 #include "esp_nimble_hci.h"
@@ -299,8 +300,18 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (event->notify_rx.attr_handle != s_notify_handle) {
                 return 0;
             }
+            uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
+            uint8_t packet[96];
+            if (len > sizeof(packet)) {
+                len = sizeof(packet);
+            }
+            int rc = os_mbuf_copydata(event->notify_rx.om, 0, len, packet);
+            if (rc != 0) {
+                return 0;
+            }
+
             joycon2_state_t st;
-            if (parse_packet(event->notify_rx.om->om_data, event->notify_rx.om->om_len, &st) && s_cb) {
+            if (parse_packet(packet, len, &st) && s_cb) {
                 emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
                 s_cb(&st);
             }
