@@ -128,6 +128,8 @@ static const ble_uuid128_t kNotifyUUIDMac =
 
 static void joycon2_scan_start(void);
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
+static int joycon2_mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                          uint16_t mtu, void *arg);
 static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                                const struct ble_gatt_chr *chr, void *arg);
 static int joycon2_dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -273,6 +275,30 @@ static void joycon2_try_finish_setup(void) {
     joycon2_write_cccd(s_notify_handle + 1);
 }
 
+static void joycon2_start_characteristic_discovery(void) {
+    if (s_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+    ESP_LOGI(TAG, "Discovering characteristics...");
+    int rc = ble_gattc_disc_all_chrs(s_conn_handle, 1, 0xffff, joycon2_chr_disc_cb, NULL);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "disc_all_chrs failed rc=%d", rc);
+    }
+}
+
+static int joycon2_mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                          uint16_t mtu, void *arg) {
+    (void)conn_handle;
+    (void)arg;
+    if (error->status == 0) {
+        ESP_LOGI(TAG, "MTU exchange complete mtu=%u", mtu);
+    } else {
+        ESP_LOGW(TAG, "MTU exchange status=%d; continuing", error->status);
+    }
+    joycon2_start_characteristic_discovery();
+    return 0;
+}
+
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
     (void)arg;
     switch (event->type) {
@@ -308,11 +334,11 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_direct_cccd_attempted = false;
             s_init_task_running = false;
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
-            ESP_LOGI(TAG, "Connected; discovering characteristics...");
-            // Discover all characteristics over full attribute range.
-            int rc = ble_gattc_disc_all_chrs(s_conn_handle, 1, 0xffff, joycon2_chr_disc_cb, NULL);
+            ESP_LOGI(TAG, "Connected; exchanging MTU...");
+            int rc = ble_gattc_exchange_mtu(s_conn_handle, joycon2_mtu_cb, NULL);
             if (rc != 0) {
-                ESP_LOGW(TAG, "disc_all_chrs failed rc=%d", rc);
+                ESP_LOGW(TAG, "exchange_mtu failed rc=%d; continuing without it", rc);
+                joycon2_start_characteristic_discovery();
             }
             return 0;
         }
@@ -447,7 +473,7 @@ static int joycon2_dsc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
     }
 
     // CCCD UUID is 0x2902.
-    if (ble_uuid_u16(&dsc->uuid.u) == 0x2902) {
+    if (s_notify_cccd_handle == 0 && ble_uuid_u16(&dsc->uuid.u) == 0x2902) {
         s_notify_cccd_handle = dsc->handle;
         ESP_LOGI(TAG, "Found CCCD descriptor handle=%u", s_notify_cccd_handle);
     }
