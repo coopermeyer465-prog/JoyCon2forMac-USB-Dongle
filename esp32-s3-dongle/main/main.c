@@ -209,6 +209,7 @@ typedef struct {
     double smooth_mouse_y;
     TickType_t last_optical_motion_at;
     TickType_t mouse_mode_until;
+    uint8_t mouse_warmup_samples;
 } device_slot_t;
 
 static device_slot_t s_left;
@@ -259,7 +260,7 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         return false;
     }
 
-    bool manual_mouse_fallback = (st->buttons & BTN_RS) != 0;
+    bool sensor_present = st->mouse_distance > 0;
     int dx = 0;
     int dy = 0;
 
@@ -275,18 +276,24 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     }
 
     // Optical mode reports real deltas here. Ignore tiny drift and impossible jumps.
-    if (abs(dx) > 80 || abs(dy) > 80) {
+    if (abs(dx) > 48 || abs(dy) > 48) {
         dx = 0;
         dy = 0;
     }
-    if (abs(dx) <= 1) dx = 0;
-    if (abs(dy) <= 1) dy = 0;
+    if (abs(dx) <= 2) dx = 0;
+    if (abs(dy) <= 2) dy = 0;
 
-    if (manual_mouse_fallback || dx != 0 || dy != 0) {
+    if (sensor_present) {
+        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(500);
+    }
+
+    bool active = slot->mouse_mode_until != 0 &&
+                  (int32_t)(slot->mouse_mode_until - xTaskGetTickCount()) > 0;
+
+    if (active && (dx != 0 || dy != 0)) {
         if (dx != 0 || dy != 0) {
             slot->last_optical_motion_at = xTaskGetTickCount();
         }
-        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
     }
 
     // If the right Joy-Con is already acting like a mouse, keep clicks mapped
@@ -297,25 +304,26 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
     }
 
-    bool active = slot->mouse_mode_until != 0 &&
-                  (int32_t)(slot->mouse_mode_until - xTaskGetTickCount()) > 0;
     if (!active) {
         slot->smooth_mouse_x = 0.0;
         slot->smooth_mouse_y = 0.0;
+        slot->mouse_warmup_samples = 0;
         return false;
     }
 
-    if (manual_mouse_fallback) {
-        int8_t rx = normalize_12bit_axis(st->right_x, false);
-        int8_t ry = normalize_12bit_axis(st->right_y, true);
-        dx = (int)rx / 8;
-        dy = (int)ry / 8;
+    if (slot->mouse_warmup_samples < 3) {
+        slot->mouse_warmup_samples++;
+        slot->smooth_mouse_x = 0.0;
+        slot->smooth_mouse_y = 0.0;
+        mouse->buttons = 0;
+        return true;
     }
 
-    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.55) + ((double)dx * 0.45);
-    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.55) + ((double)dy * 0.45);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 2.2));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 2.2));
+    // Very light smoothing: low latency, but enough to soften single-packet blips.
+    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.20) + ((double)dx * 0.80);
+    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.20) + ((double)dy * 0.80);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 1.4));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 1.4));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
