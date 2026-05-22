@@ -249,10 +249,12 @@ static void joycon2_try_finish_setup(void) {
         return;
     }
 
-    // Most BLE stacks enable notifications by writing 0x0001 to the CCCD at
-    // characteristic value handle + 1. Descriptor discovery remains as fallback.
-    s_direct_cccd_attempted = true;
-    joycon2_write_cccd(s_notify_handle + 1);
+    // CoreBluetooth's setNotifyValue finds the CCCD for us. On the ESP32 we
+    // must discover and write the real 0x2902 descriptor; guessing
+    // notify_handle + 1 can succeed against the wrong attribute and leave the
+    // Joy-Con "subscribed" in our state machine while no data actually streams.
+    s_direct_cccd_attempted = false;
+    joycon2_start_descriptor_fallback();
 }
 
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
