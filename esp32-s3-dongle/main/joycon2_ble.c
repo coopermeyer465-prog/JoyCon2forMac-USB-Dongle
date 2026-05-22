@@ -36,8 +36,10 @@ static joycon2_status_cb_t s_status_cb = NULL;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_write_handle = 0;
 static uint16_t s_notify_handle = 0;
+static uint16_t s_ack_handle = 0;
 static uint16_t s_notify_cccd_handle = 0;
 static bool s_subscribed = false;
+static bool s_waiting_for_ack_cccd = false;
 static bool s_direct_cccd_attempted = false;
 static bool s_init_task_running = false;
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
@@ -112,8 +114,12 @@ static const ble_uuid128_t kWriteUUID =
                      0x6C, 0x4E, 0xB7, 0x8E, 0xC9, 0x4A, 0x9D, 0x64);
 
 static const ble_uuid128_t kNotifyUUID =
-    BLE_UUID128_INIT(0xD2, 0x7F, 0xDF, 0x09, 0x8F, 0x11, 0x2F, 0x81,
-                     0x28, 0xAD, 0xFE, 0x49, 0xBE, 0xE9, 0x7D, 0xAB);
+    BLE_UUID128_INIT(0xF8, 0xC0, 0xFC, 0x5F, 0x75, 0x32, 0x58, 0x82,
+                     0x19, 0x46, 0x3E, 0xEC, 0x6C, 0x86, 0x92, 0x74);
+
+static const ble_uuid128_t kNotifyUUIDAlt =
+    BLE_UUID128_INIT(0xF9, 0xC0, 0xFC, 0x5F, 0x75, 0x32, 0x58, 0x82,
+                     0x19, 0x46, 0x3E, 0xEC, 0x6C, 0x86, 0x92, 0x74);
 
 static void joycon2_scan_start(void);
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
@@ -166,22 +172,45 @@ static void joycon2_send_init_commands_now(void) {
         return;
     }
 
-    static const uint8_t cmd1[] = {0x0c, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00};
-    static const uint8_t cmd2[] = {0x0c, 0x91, 0x01, 0x04, 0x00, 0x04, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_init[] = {0x03, 0x91, 0x01, 0x0d, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    static const uint8_t cmd_07[] = {0x07, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_16[] = {0x16, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_15_03[] = {0x15, 0x91, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_features_set[] = {0x0c, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_11[] = {0x11, 0x91, 0x01, 0x03, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_vibrate[] = {0x0a, 0x91, 0x01, 0x08, 0x00, 0x14, 0x00, 0x00, 0x01, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x35, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_features_enable[] = {0x0c, 0x91, 0x01, 0x04, 0x00, 0x04, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_select_report[] = {0x03, 0x91, 0x01, 0x0a, 0x00, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_fw[] = {0x10, 0x91, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_01_0c[] = {0x01, 0x91, 0x01, 0x0c, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t cmd_led[] = {0x09, 0x91, 0x01, 0x07, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
-    ESP_LOGI(TAG, "Sending init command 1");
-    int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_handle, cmd1, sizeof(cmd1));
-    if (rc != 0) {
-        ESP_LOGW(TAG, "write_no_rsp cmd1 failed rc=%d", rc);
-    }
+    struct init_cmd {
+        const uint8_t *data;
+        size_t len;
+    };
+    static const struct init_cmd cmds[] = {
+        {cmd_init, sizeof(cmd_init)},
+        {cmd_07, sizeof(cmd_07)},
+        {cmd_16, sizeof(cmd_16)},
+        {cmd_15_03, sizeof(cmd_15_03)},
+        {cmd_features_set, sizeof(cmd_features_set)},
+        {cmd_11, sizeof(cmd_11)},
+        {cmd_vibrate, sizeof(cmd_vibrate)},
+        {cmd_features_enable, sizeof(cmd_features_enable)},
+        {cmd_select_report, sizeof(cmd_select_report)},
+        {cmd_fw, sizeof(cmd_fw)},
+        {cmd_01_0c, sizeof(cmd_01_0c)},
+        {cmd_led, sizeof(cmd_led)},
+    };
 
-    // Best-effort delay; in a production implementation, use a timer instead.
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    ESP_LOGI(TAG, "Sending init command 2");
-    rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_handle, cmd2, sizeof(cmd2));
-    if (rc != 0) {
-        ESP_LOGW(TAG, "write_no_rsp cmd2 failed rc=%d", rc);
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        ESP_LOGI(TAG, "Sending init command %u/%u", (unsigned)(i + 1), (unsigned)(sizeof(cmds) / sizeof(cmds[0])));
+        int rc = ble_gattc_write_no_rsp_flat(s_conn_handle, s_write_handle, cmds[i].data, cmds[i].len);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "write_no_rsp init command %u failed rc=%d", (unsigned)(i + 1), rc);
+        }
+        vTaskDelay(pdMS_TO_TICKS(60));
     }
 }
 
@@ -191,11 +220,11 @@ static void joycon2_init_task(void *param) {
     vTaskDelay(pdMS_TO_TICKS(500));
     joycon2_send_init_commands_now();
 
-    // Match the macOS app's "enable notifications again after a short delay"
-    // behavior. This helps if the Joy-Con only starts streaming after init.
-    vTaskDelay(pdMS_TO_TICKS(1500));
+    // Subscribe to input after the init burst. Switch 2 controllers can drop
+    // init ACKs if high-rate input notifications are enabled too early.
+    vTaskDelay(pdMS_TO_TICKS(300));
     if (s_conn_handle != BLE_HS_CONN_HANDLE_NONE && s_notify_handle != 0) {
-        s_direct_cccd_attempted = true;
+        s_direct_cccd_attempted = false;
         joycon2_write_cccd(s_notify_handle + 1);
     }
 
@@ -249,12 +278,14 @@ static void joycon2_try_finish_setup(void) {
         return;
     }
 
-    // CoreBluetooth's setNotifyValue finds the CCCD for us. On the ESP32 we
-    // must discover and write the real 0x2902 descriptor; guessing
-    // notify_handle + 1 can succeed against the wrong attribute and leave the
-    // Joy-Con "subscribed" in our state machine while no data actually streams.
-    s_direct_cccd_attempted = false;
-    joycon2_start_descriptor_fallback();
+    if (s_ack_handle != 0) {
+        s_waiting_for_ack_cccd = true;
+        joycon2_write_cccd(s_ack_handle + 1);
+    } else {
+        // Older macOS-derived experiments did not identify ACK separately.
+        // If discovery misses it, still try the init burst before input.
+        joycon2_schedule_init_commands();
+    }
 }
 
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
@@ -284,8 +315,10 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_conn_handle = event->connect.conn_handle;
             s_write_handle = 0;
             s_notify_handle = 0;
+            s_ack_handle = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
+            s_waiting_for_ack_cccd = false;
             s_direct_cccd_attempted = false;
             s_init_task_running = false;
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
@@ -302,8 +335,10 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
             s_write_handle = 0;
             s_notify_handle = 0;
+            s_ack_handle = 0;
             s_notify_cccd_handle = 0;
             s_subscribed = false;
+            s_waiting_for_ack_cccd = false;
             s_direct_cccd_attempted = false;
             s_init_task_running = false;
             emit_status(JOYCON2_BLE_STATUS_DISCONNECTED);
@@ -311,7 +346,8 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             return 0;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {
-            bool expected_handle = event->notify_rx.attr_handle == s_notify_handle;
+            bool expected_handle = event->notify_rx.attr_handle == s_notify_handle ||
+                                   event->notify_rx.attr_handle == s_ack_handle;
             if (!expected_handle) {
                 emit_status(JOYCON2_BLE_STATUS_NOTIFY_OTHER);
             }
@@ -319,6 +355,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (event->notify_rx.attr_handle != s_notify_handle) {
                 ESP_LOGD(TAG, "Notification on non-primary handle=%u primary=%u",
                          event->notify_rx.attr_handle, s_notify_handle);
+                return 0;
             }
             uint16_t len = OS_MBUF_PKTLEN(event->notify_rx.om);
             uint8_t packet[96];
@@ -364,7 +401,8 @@ static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
     if (ble_uuid_cmp(&chr->uuid.u, &kWriteUUID.u) == 0) {
         s_write_handle = chr->val_handle;
         ESP_LOGI(TAG, "Found write characteristic handle=%u", s_write_handle);
-    } else if (ble_uuid_cmp(&chr->uuid.u, &kNotifyUUID.u) == 0) {
+    } else if (ble_uuid_cmp(&chr->uuid.u, &kNotifyUUID.u) == 0 ||
+               ble_uuid_cmp(&chr->uuid.u, &kNotifyUUIDAlt.u) == 0) {
         s_notify_handle = chr->val_handle;
         ESP_LOGI(TAG, "Found notify characteristic handle=%u", s_notify_handle);
     } else {
@@ -373,9 +411,11 @@ static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error
             s_write_handle = chr->val_handle;
             ESP_LOGI(TAG, "Using fallback write characteristic handle=%u", s_write_handle);
         }
-        if (s_notify_handle == 0 && (chr->properties & BLE_GATT_CHR_F_NOTIFY)) {
-            s_notify_handle = chr->val_handle;
-            ESP_LOGI(TAG, "Using fallback notify characteristic handle=%u", s_notify_handle);
+        if (s_write_handle != 0 && s_ack_handle == 0 &&
+            chr->val_handle > s_write_handle &&
+            (chr->properties & BLE_GATT_CHR_F_NOTIFY)) {
+            s_ack_handle = chr->val_handle;
+            ESP_LOGI(TAG, "Using fallback ACK characteristic handle=%u", s_ack_handle);
         }
     }
     return 0;
@@ -431,10 +471,16 @@ static int joycon2_cccd_write_cb(uint16_t conn_handle, const struct ble_gatt_err
     }
 
     ESP_LOGI(TAG, "Notifications enabled");
+    if (s_waiting_for_ack_cccd) {
+        s_waiting_for_ack_cccd = false;
+        ESP_LOGI(TAG, "ACK notifications enabled");
+        joycon2_schedule_init_commands();
+        return 0;
+    }
+
     s_subscribed = true;
     s_direct_cccd_attempted = false;
     emit_status(JOYCON2_BLE_STATUS_SUBSCRIBED);
-    joycon2_schedule_init_commands();
     return 0;
 }
 
