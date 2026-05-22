@@ -21,42 +21,12 @@ enum {
 // the CDC composite variant was unreliable on the XIAO ESP32-S3 USB-C port.
 #define TUSB_DESC_TOTAL_LEN      (TUD_CONFIG_DESC_LEN + (2 * TUD_HID_DESC_LEN))
 
-// Report layout matches the macOS app's virtual gamepad: 16 buttons + hat + 4 axes.
+// Conventional TinyUSB gamepad layout:
+// X,Y,Z,Rz,Rx,Ry (6 axes) + hat byte + 32 button bits.
+// This is much friendlier to Steam's "Generic Controller" HID path than the
+// earlier custom 24-button report.
 static const uint8_t gamepad_report_descriptor[] = {
-    0x05, 0x01,        // Usage Page (Generic Desktop)
-    0x09, 0x05,        // Usage (Game Pad)
-    0xA1, 0x01,        // Collection (Application)
-    0x05, 0x09,        //   Usage Page (Button)
-    0x19, 0x01,        //   Usage Minimum (Button 1)
-    0x29, 0x18,        //   Usage Maximum (Button 24)
-    0x15, 0x00,        //   Logical Minimum (0)
-    0x25, 0x01,        //   Logical Maximum (1)
-    0x75, 0x01,        //   Report Size (1)
-    0x95, 0x18,        //   Report Count (24)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
-    0x05, 0x01,        //   Usage Page (Generic Desktop)
-    0x09, 0x39,        //   Usage (Hat switch)
-    0x15, 0x00,        //   Logical Minimum (0)
-    0x25, 0x07,        //   Logical Maximum (7)
-    0x35, 0x00,        //   Physical Minimum (0)
-    0x46, 0x3B, 0x01,  //   Physical Maximum (315)
-    0x65, 0x14,        //   Unit (Eng Rot: Degree)
-    0x75, 0x04,        //   Report Size (4)
-    0x95, 0x01,        //   Report Count (1)
-    0x81, 0x42,        //   Input (Data,Var,Abs,Null)
-    0x75, 0x04,        //   Report Size (4)
-    0x95, 0x01,        //   Report Count (1)
-    0x81, 0x03,        //   Input (Cnst,Var,Abs)
-    0x09, 0x30,        //   Usage (X)
-    0x09, 0x31,        //   Usage (Y)
-    0x09, 0x33,        //   Usage (Rx)
-    0x09, 0x34,        //   Usage (Ry)
-    0x15, 0x81,        //   Logical Minimum (-127)
-    0x25, 0x7F,        //   Logical Maximum (127)
-    0x75, 0x08,        //   Report Size (8)
-    0x95, 0x04,        //   Report Count (4)
-    0x81, 0x02,        //   Input (Data,Var,Abs)
-    0xC0               // End Collection
+    TUD_HID_REPORT_DESC_GAMEPAD()
 };
 
 static const uint8_t mouse_report_descriptor[] = {
@@ -160,15 +130,18 @@ void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {
     if (!tud_hid_n_ready(ITF_NUM_GAMEPAD) || !report) {
         return;
     }
-    uint8_t buf[8];
-    buf[0] = (uint8_t)(report->buttons & 0xFF);
-    buf[1] = (uint8_t)((report->buttons >> 8) & 0xFF);
-    buf[2] = (uint8_t)((report->buttons >> 16) & 0xFF);
-    buf[3] = (uint8_t)(report->hat & 0x0F);
-    buf[4] = (uint8_t)report->lx;
-    buf[5] = (uint8_t)report->ly;
-    buf[6] = (uint8_t)report->rx;
-    buf[7] = (uint8_t)report->ry;
+    uint8_t buf[11];
+    buf[0] = (uint8_t)report->lx; // X
+    buf[1] = (uint8_t)report->ly; // Y
+    buf[2] = (uint8_t)report->rx; // Z
+    buf[3] = (uint8_t)report->ry; // Rz
+    buf[4] = 0;                   // Rx
+    buf[5] = 0;                   // Ry
+    buf[6] = report->hat;         // 0=centered, 1=up ... 8=up-left
+    buf[7] = (uint8_t)(report->buttons & 0xFF);
+    buf[8] = (uint8_t)((report->buttons >> 8) & 0xFF);
+    buf[9] = (uint8_t)((report->buttons >> 16) & 0xFF);
+    buf[10] = (uint8_t)((report->buttons >> 24) & 0xFF);
     tud_hid_n_report(ITF_NUM_GAMEPAD, 0, buf, sizeof(buf));
 }
 

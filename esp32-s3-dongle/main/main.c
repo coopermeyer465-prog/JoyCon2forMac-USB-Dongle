@@ -170,15 +170,15 @@ static uint8_t hat_from_buttons(uint32_t buttons) {
     bool left = (buttons & LEFT) != 0;
     bool right = (buttons & RIGHT) != 0;
 
-    if (up && right) return 1;
-    if (right && down) return 3;
-    if (down && left) return 5;
-    if (left && up) return 7;
-    if (up) return 0;
-    if (right) return 2;
-    if (down) return 4;
-    if (left) return 6;
-    return 8;
+    if (up && right) return 2;
+    if (right && down) return 4;
+    if (down && left) return 6;
+    if (left && up) return 8;
+    if (up) return 1;
+    if (right) return 3;
+    if (down) return 5;
+    if (left) return 7;
+    return 0;
 }
 
 static int8_t clamp_i16_to_i8(int v) {
@@ -342,30 +342,27 @@ static void on_joycon_state(const joycon2_state_t *st) {
 
     r.hat = hat_from_buttons(buttons);
 
-    // Map common buttons to the first 8 bits, using the Joy-Con bit masks.
-    // A/B/X/Y:
-    if (buttons & BTN_A) r.buttons |= (1u << 0); // A
-    if (buttons & BTN_B) r.buttons |= (1u << 1); // B
-    if (buttons & BTN_X) r.buttons |= (1u << 2); // X
-    if (buttons & BTN_Y) r.buttons |= (1u << 3); // Y
-    // L/R/ZL/ZR:
-    if (buttons & BTN_L) r.buttons |= (1u << 4); // L
-    if (buttons & BTN_R) r.buttons |= (1u << 5); // R
-    if (buttons & BTN_ZL) r.buttons |= (1u << 6); // ZL
-    if (buttons & BTN_ZR) r.buttons |= (1u << 7); // ZR
-
-    // Secondary buttons (bits 8..18).
-    if (buttons & BTN_LS) r.buttons |= (1u << 8);       // LS
-    if (buttons & BTN_RS) r.buttons |= (1u << 9);       // RS
-    if (buttons & BTN_SELECT) r.buttons |= (1u << 10);  // Minus
-    if (buttons & BTN_START) r.buttons |= (1u << 11);   // Plus
-    if (buttons & BTN_HOME) r.buttons |= (1u << 12);    // Home
-    if (buttons & BTN_CAMERA) r.buttons |= (1u << 13);  // Capture
-    if (buttons & BTN_CHAT) r.buttons |= (1u << 14);    // GameChat
-    if (buttons & BTN_SL_L) r.buttons |= (1u << 15);    // SL(L)
-    if (buttons & BTN_SR_L) r.buttons |= (1u << 16);    // SR(L)
-    if (buttons & BTN_SL_R) r.buttons |= (1u << 17);    // SL(R)
-    if (buttons & BTN_SR_R) r.buttons |= (1u << 18);    // SR(R)
+    // Steam/Web Gamepad physical layout: 0=bottom, 1=right, 2=left, 3=top.
+    // Nintendo labels by physical position: B=bottom, A=right, Y=left, X=top.
+    if (buttons & BTN_B) r.buttons |= (1u << 0);       // South / B
+    if (buttons & BTN_A) r.buttons |= (1u << 1);       // East / A
+    if (buttons & BTN_Y) r.buttons |= (1u << 2);       // West / Y
+    if (buttons & BTN_X) r.buttons |= (1u << 3);       // North / X
+    if (buttons & BTN_L) r.buttons |= (1u << 4);       // L
+    if (buttons & BTN_R) r.buttons |= (1u << 5);       // R
+    if (buttons & BTN_ZL) r.buttons |= (1u << 6);      // ZL
+    if (buttons & BTN_ZR) r.buttons |= (1u << 7);      // ZR
+    if (buttons & BTN_SELECT) r.buttons |= (1u << 8);  // Minus
+    if (buttons & BTN_START) r.buttons |= (1u << 9);   // Plus
+    if (buttons & BTN_LS) r.buttons |= (1u << 10);     // LS
+    if (buttons & BTN_RS) r.buttons |= (1u << 11);     // RS
+    if (buttons & BTN_HOME) r.buttons |= (1u << 12);   // Home
+    if (buttons & BTN_CAMERA) r.buttons |= (1u << 13); // Capture
+    if (buttons & BTN_CHAT) r.buttons |= (1u << 14);   // GameChat
+    if (buttons & BTN_SL_L) r.buttons |= (1u << 15);   // SL(L)
+    if (buttons & BTN_SR_L) r.buttons |= (1u << 16);   // SR(L)
+    if (buttons & BTN_SL_R) r.buttons |= (1u << 17);   // SL(R)
+    if (buttons & BTN_SR_R) r.buttons |= (1u << 18);   // SR(R)
 
     r.lx = normalize_12bit_axis(latest_left_x(), false);
     r.ly = normalize_12bit_axis(latest_left_y(), true);

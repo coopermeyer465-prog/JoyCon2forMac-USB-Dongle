@@ -3,8 +3,8 @@
 #include <stdint.h>
 
 typedef struct {
-    uint32_t buttons; // bits 0..23 (24 buttons)
-    uint8_t hat;      // 0..7, 8 = neutral
+    uint32_t buttons; // bits 0..31
+    uint8_t hat;      // TinyUSB gamepad: 0=centered, 1=up ... 8=up-left
     int8_t lx;
     int8_t ly;
     int8_t rx;
