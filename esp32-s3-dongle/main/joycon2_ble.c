@@ -504,6 +504,9 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (rc != 0) {
                 joycon2_start_characteristic_discovery(ctx);
             }
+            // Resume scanning immediately so both Joy-Cons can be put into
+            // pairing mode at the same time; setup continues per connection.
+            joycon2_scan_start();
             return 0;
         }
         case BLE_GAP_EVENT_DISCONNECT: {

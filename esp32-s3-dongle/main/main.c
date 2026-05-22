@@ -195,6 +195,7 @@ typedef struct {
     int16_t last_mouse_y;
     double smooth_mouse_x;
     double smooth_mouse_y;
+    TickType_t last_optical_motion_at;
     TickType_t mouse_mode_until;
 } device_slot_t;
 
@@ -242,11 +243,24 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     }
 
     joycon2_state_t *st = &slot->state;
-    bool mouse_mode_hint = st->mouse_distance != 0 || st->mouse_unk != 0;
+    bool manual_mouse_fallback = (st->buttons & BTN_RS) != 0;
+    bool small_relative_report = st->mouse_x >= -127 && st->mouse_x <= 127 &&
+                                 st->mouse_y >= -127 && st->mouse_y <= 127 &&
+                                 (st->mouse_x != 0 || st->mouse_y != 0);
+    bool mouse_mode_hint = manual_mouse_fallback ||
+                           small_relative_report ||
+                           st->mouse_distance != 0 ||
+                           st->mouse_unk != 0;
     int dx = 0;
     int dy = 0;
 
-    if (!slot->has_mouse_sample) {
+    if (small_relative_report) {
+        dx = st->mouse_x;
+        dy = st->mouse_y;
+        slot->last_mouse_x = st->mouse_x;
+        slot->last_mouse_y = st->mouse_y;
+        slot->has_mouse_sample = true;
+    } else if (!slot->has_mouse_sample) {
         slot->last_mouse_x = st->mouse_x;
         slot->last_mouse_y = st->mouse_y;
         slot->has_mouse_sample = true;
@@ -266,6 +280,17 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     if (abs(dy) <= 1) dy = 0;
 
     if (mouse_mode_hint || dx != 0 || dy != 0) {
+        if (dx != 0 || dy != 0 || small_relative_report) {
+            slot->last_optical_motion_at = xTaskGetTickCount();
+        }
+        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
+    }
+
+    // If the right Joy-Con is already acting like a mouse, keep clicks mapped
+    // briefly even after motion pauses so click/drag works naturally.
+    if ((st->buttons & (BTN_R | BTN_ZR)) != 0 &&
+        slot->last_optical_motion_at != 0 &&
+        (int32_t)((slot->last_optical_motion_at + pdMS_TO_TICKS(5000)) - xTaskGetTickCount()) > 0) {
         slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
     }
 
@@ -277,10 +302,17 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         return false;
     }
 
-    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.65) + ((double)dx * 0.35);
-    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.65) + ((double)dy * 0.35);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 1.8));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 1.8));
+    if (manual_mouse_fallback) {
+        int8_t rx = normalize_12bit_axis(st->right_x, false);
+        int8_t ry = normalize_12bit_axis(st->right_y, true);
+        dx = (int)rx / 8;
+        dy = (int)ry / 8;
+    }
+
+    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.55) + ((double)dx * 0.45);
+    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.55) + ((double)dy * 0.45);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 2.2));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 2.2));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
