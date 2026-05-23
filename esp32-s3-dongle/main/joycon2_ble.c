@@ -51,9 +51,6 @@ static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static joycon_conn_t s_conns[2];
 static bool s_connecting = false;
 static bool s_scanning = false;
-static bool s_ble_synced = false;
-static TickType_t s_last_scan_start_at = 0;
-static joycon_conn_t *s_pending_connect = NULL;
 
 static const ble_uuid128_t kWriteUUID =
     BLE_UUID128_INIT(0x05, 0xF0, 0xE5, 0x4F, 0xA5, 0x1E, 0x44, 0xAF,
@@ -148,15 +145,6 @@ static bool free_slot_exists(void) {
     return false;
 }
 
-static bool setup_in_progress(void) {
-    for (size_t i = 0; i < sizeof(s_conns) / sizeof(s_conns[0]); i++) {
-        if (s_conns[i].allocated && !s_conns[i].subscribed && !s_conns[i].notifying) {
-            return true;
-        }
-    }
-    return false;
-}
-
 static void release_ctx(joycon_conn_t *ctx) {
     if (ctx) {
         memset(ctx, 0, sizeof(*ctx));
@@ -182,11 +170,7 @@ static void infer_side_from_buttons(joycon2_state_t *st, joycon_side_t hint) {
 }
 
 static bool parse_packet(const uint8_t *data, size_t len, joycon_side_t side, joycon2_state_t *out) {
-    // Setup/ACK notifications can be short and still contain bytes where the
-    // input report keeps buttons. Do not treat those as real controller input,
-    // or we can falsely mark the controller as notifying and promote the wrong
-    // BLE characteristic handle.
-    if (!data || !out || len < 0x18) {
+    if (!data || !out || len < 7) {
         return false;
     }
 
@@ -293,7 +277,6 @@ static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc, char *name, siz
 }
 
 static void joycon2_scan_start(void);
-static void joycon2_start_pending_connect(void);
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
 static int joycon2_mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error, uint16_t mtu, void *arg);
 static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error, const struct ble_gatt_chr *chr, void *arg);
@@ -509,28 +492,19 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             new_ctx->connecting = true;
             s_connecting = true;
             s_scanning = false;
-            s_pending_connect = new_ctx;
             emit_status(JOYCON2_BLE_STATUS_FOUND);
-            ESP_LOGI(TAG, "Found %s; stopping scan before connect...", new_ctx->name);
-            int rc = ble_gap_disc_cancel();
+            ESP_LOGI(TAG, "Found %s; connecting...", new_ctx->name);
+            ble_gap_disc_cancel();
+            int rc = ble_gap_connect(s_own_addr_type, &new_ctx->addr, 30000, NULL, joycon2_gap_event, new_ctx);
             if (rc != 0) {
-                ESP_LOGW(TAG, "scan cancel failed rc=%d; connecting anyway", rc);
-                joycon2_start_pending_connect();
-            }
-            return 0;
-        }
-        case BLE_GAP_EVENT_DISC_COMPLETE:
-            s_scanning = false;
-            if (s_pending_connect) {
-                joycon2_start_pending_connect();
-                return 0;
-            }
-            if (!s_connecting && !setup_in_progress() && free_slot_exists()) {
+                ESP_LOGW(TAG, "connect failed rc=%d; restarting scan", rc);
+                s_connecting = false;
+                release_ctx(new_ctx);
                 joycon2_scan_start();
             }
             return 0;
+        }
         case BLE_GAP_EVENT_CONNECT: {
-            s_pending_connect = NULL;
             s_connecting = false;
             if (!ctx) {
                 return 0;
@@ -538,7 +512,6 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             ctx->connecting = false;
             if (event->connect.status != 0) {
                 ESP_LOGW(TAG, "[%s] Connect failed status=%d", ctx->name, event->connect.status);
-                s_connecting = false;
                 release_ctx(ctx);
                 joycon2_scan_start();
                 return 0;
@@ -549,6 +522,9 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (rc != 0) {
                 joycon2_start_characteristic_discovery(ctx);
             }
+            // Resume scanning immediately so both Joy-Cons can be put into
+            // pairing mode at the same time; setup continues per connection.
+            joycon2_scan_start();
             return 0;
         }
         case BLE_GAP_EVENT_DISCONNECT: {
@@ -608,7 +584,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
 }
 
 static void joycon2_scan_start(void) {
-    if (!s_ble_synced || s_connecting || s_scanning || setup_in_progress() || !free_slot_exists()) {
+    if (s_connecting || s_scanning || !free_slot_exists()) {
         return;
     }
 
@@ -622,52 +598,9 @@ static void joycon2_scan_start(void) {
     int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &params, joycon2_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_gap_disc failed rc=%d", rc);
-        s_scanning = false;
     } else {
         s_scanning = true;
-        s_last_scan_start_at = xTaskGetTickCount();
         emit_status(JOYCON2_BLE_STATUS_SCANNING);
-    }
-}
-
-static void joycon2_start_pending_connect(void) {
-    joycon_conn_t *ctx = s_pending_connect;
-    if (!ctx) {
-        s_connecting = false;
-        joycon2_scan_start();
-        return;
-    }
-
-    s_pending_connect = NULL;
-    ESP_LOGI(TAG, "Connecting to %s...", ctx->name);
-    int rc = ble_gap_connect(s_own_addr_type, &ctx->addr, 30000, NULL, joycon2_gap_event, ctx);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "[%s] connect start failed rc=%d; restarting scan", ctx->name, rc);
-        s_connecting = false;
-        release_ctx(ctx);
-        joycon2_scan_start();
-    }
-}
-
-static void joycon2_scan_watchdog_task(void *param) {
-    (void)param;
-    while (1) {
-        vTaskDelay(pdMS_TO_TICKS(6000));
-        if (!s_ble_synced || !free_slot_exists() || s_connecting || setup_in_progress()) {
-            continue;
-        }
-        if (!s_scanning) {
-            joycon2_scan_start();
-            continue;
-        }
-        if (s_last_scan_start_at != 0 &&
-            (int32_t)(xTaskGetTickCount() - s_last_scan_start_at) > (int32_t)pdMS_TO_TICKS(12000)) {
-            ESP_LOGW(TAG, "Restarting stale BLE scan");
-            s_scanning = false;
-            (void)ble_gap_disc_cancel();
-            vTaskDelay(pdMS_TO_TICKS(100));
-            joycon2_scan_start();
-        }
     }
 }
 
@@ -680,7 +613,6 @@ static void joycon2_on_sync(void) {
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d", rc);
     }
-    s_ble_synced = true;
     joycon2_scan_start();
 }
 
@@ -705,7 +637,6 @@ void joycon2_ble_start(joycon2_state_cb_t cb) {
     ble_svc_gap_device_name_set("JoyCon2 Dongle");
     ble_hs_cfg.reset_cb = joycon2_on_reset;
     ble_hs_cfg.sync_cb = joycon2_on_sync;
-    xTaskCreate(joycon2_scan_watchdog_task, "joycon_scan_watch", 3072, NULL, 3, NULL);
     nimble_port_freertos_init(joycon2_host_task);
 }
 
