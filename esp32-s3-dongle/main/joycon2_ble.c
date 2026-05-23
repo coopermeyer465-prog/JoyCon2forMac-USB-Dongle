@@ -14,11 +14,13 @@
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "os/os_mbuf.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
 static const char *TAG = "joycon2_ble";
+void ble_store_config_init(void);
 
 typedef enum {
     JOYCON_SIDE_UNKNOWN = 0,
@@ -31,6 +33,7 @@ typedef struct {
     bool connecting;
     bool subscribed;
     bool notifying;
+    bool remembered;
     bool direct_cccd_attempted;
     bool init_task_running;
     uint16_t conn_handle;
@@ -49,6 +52,7 @@ static joycon2_state_cb_t s_cb = NULL;
 static joycon2_status_cb_t s_status_cb = NULL;
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static joycon_conn_t s_conns[2];
+static joycon_conn_t s_saved[2];
 static bool s_connecting = false;
 static bool s_scanning = false;
 
@@ -109,6 +113,75 @@ static joycon_side_t fallback_side_for_unknown(void) {
         return JOYCON_SIDE_LEFT;
     }
     return JOYCON_SIDE_UNKNOWN;
+}
+
+static const char *side_key(joycon_side_t side) {
+    switch (side) {
+        case JOYCON_SIDE_LEFT:
+            return "left";
+        case JOYCON_SIDE_RIGHT:
+            return "right";
+        default:
+            return NULL;
+    }
+}
+
+static void save_known_controller(joycon_side_t side, const ble_addr_t *addr) {
+    const char *key = side_key(side);
+    if (!key || !addr) {
+        return;
+    }
+
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("joycon2", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open save failed err=0x%x", (unsigned)err);
+        return;
+    }
+    err = nvs_set_blob(nvs, key, addr, sizeof(*addr));
+    if (err == ESP_OK) {
+        (void)nvs_commit(nvs);
+    } else {
+        ESP_LOGW(TAG, "nvs_set_blob %s failed err=0x%x", key, (unsigned)err);
+    }
+    nvs_close(nvs);
+
+    size_t idx = side == JOYCON_SIDE_RIGHT ? 0 : 1;
+    memset(&s_saved[idx], 0, sizeof(s_saved[idx]));
+    s_saved[idx].allocated = true;
+    s_saved[idx].remembered = true;
+    s_saved[idx].side = side;
+    s_saved[idx].addr = *addr;
+    s_saved[idx].conn_handle = BLE_HS_CONN_HANDLE_NONE;
+    snprintf(s_saved[idx].name, sizeof(s_saved[idx].name), "Joy-Con 2 %s",
+             side == JOYCON_SIDE_RIGHT ? "Right" : "Left");
+}
+
+static void load_known_controllers(void) {
+    memset(s_saved, 0, sizeof(s_saved));
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("joycon2", NVS_READONLY, &nvs);
+    if (err != ESP_OK) {
+        return;
+    }
+
+    const joycon_side_t sides[] = {JOYCON_SIDE_RIGHT, JOYCON_SIDE_LEFT};
+    for (size_t i = 0; i < sizeof(sides) / sizeof(sides[0]); i++) {
+        ble_addr_t addr;
+        size_t len = sizeof(addr);
+        err = nvs_get_blob(nvs, side_key(sides[i]), &addr, &len);
+        if (err == ESP_OK && len == sizeof(addr)) {
+            size_t idx = sides[i] == JOYCON_SIDE_RIGHT ? 0 : 1;
+            s_saved[idx].allocated = true;
+            s_saved[idx].remembered = true;
+            s_saved[idx].side = sides[i];
+            s_saved[idx].addr = addr;
+            s_saved[idx].conn_handle = BLE_HS_CONN_HANDLE_NONE;
+            snprintf(s_saved[idx].name, sizeof(s_saved[idx].name), "Joy-Con 2 %s",
+                     sides[i] == JOYCON_SIDE_RIGHT ? "Right" : "Left");
+        }
+    }
+    nvs_close(nvs);
 }
 
 static bool any_input_flowing(void) {
@@ -301,6 +374,7 @@ static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc, char *name, siz
 }
 
 static void joycon2_scan_start(void);
+static void joycon2_connect_saved_or_scan(void);
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
 static int joycon2_mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error, uint16_t mtu, void *arg);
 static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error, const struct ble_gatt_chr *chr, void *arg);
@@ -540,10 +614,11 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (event->connect.status != 0) {
                 ESP_LOGW(TAG, "[%s] Connect failed status=%d", ctx->name, event->connect.status);
                 release_ctx(ctx);
-                joycon2_scan_start();
+                joycon2_connect_saved_or_scan();
                 return 0;
             }
             ctx->conn_handle = event->connect.conn_handle;
+            save_known_controller(ctx->side, &ctx->addr);
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
             struct ble_gap_upd_params params = {
                 .itvl_min = 6,   // 7.5 ms
@@ -563,7 +638,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             }
             // Resume scanning immediately so both Joy-Cons can be put into
             // pairing mode at the same time; setup continues per connection.
-            joycon2_scan_start();
+            joycon2_connect_saved_or_scan();
             return 0;
         }
         case BLE_GAP_EVENT_DISCONNECT: {
@@ -574,7 +649,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             ESP_LOGW(TAG, "[%s] Disconnected reason=%d", disc_ctx ? disc_ctx->name : "?", event->disconnect.reason);
             release_ctx(disc_ctx);
             emit_status(any_input_flowing() ? JOYCON2_BLE_STATUS_NOTIFYING : JOYCON2_BLE_STATUS_DISCONNECTED);
-            joycon2_scan_start();
+            joycon2_connect_saved_or_scan();
             return 0;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {
@@ -650,6 +725,38 @@ static void joycon2_scan_start(void) {
     }
 }
 
+static void joycon2_connect_saved_or_scan(void) {
+    if (s_connecting || !free_slot_exists()) {
+        return;
+    }
+    for (size_t i = 0; i < sizeof(s_saved) / sizeof(s_saved[0]); i++) {
+        if (!s_saved[i].allocated || ctx_for_addr(&s_saved[i].addr)) {
+            continue;
+        }
+        joycon_conn_t *new_ctx = alloc_ctx();
+        if (!new_ctx) {
+            break;
+        }
+        new_ctx->addr = s_saved[i].addr;
+        new_ctx->side = s_saved[i].side;
+        new_ctx->remembered = true;
+        snprintf(new_ctx->name, sizeof(new_ctx->name), "%s", s_saved[i].name);
+        new_ctx->connecting = true;
+        s_connecting = true;
+        emit_status(JOYCON2_BLE_STATUS_FOUND);
+        ESP_LOGI(TAG, "Trying remembered %s...", new_ctx->name);
+        int rc = ble_gap_connect(s_own_addr_type, &new_ctx->addr, 7000, NULL, joycon2_gap_event, new_ctx);
+        if (rc != 0) {
+            ESP_LOGW(TAG, "remembered connect failed rc=%d", rc);
+            s_connecting = false;
+            release_ctx(new_ctx);
+            continue;
+        }
+        return;
+    }
+    joycon2_scan_start();
+}
+
 static void joycon2_on_reset(int reason) {
     ESP_LOGE(TAG, "NimBLE reset reason=%d", reason);
 }
@@ -659,7 +766,7 @@ static void joycon2_on_sync(void) {
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d", rc);
     }
-    joycon2_scan_start();
+    joycon2_connect_saved_or_scan();
 }
 
 static void joycon2_host_task(void *param) {
@@ -681,8 +788,14 @@ void joycon2_ble_start(joycon2_state_cb_t cb) {
     ble_svc_gap_init();
     ble_svc_gatt_init();
     ble_svc_gap_device_name_set("JoyCon2 Dongle");
+    ble_hs_cfg.sm_io_cap = BLE_SM_IO_CAP_NO_IO;
+    ble_hs_cfg.sm_bonding = 1;
+    ble_hs_cfg.sm_our_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
+    ble_hs_cfg.sm_their_key_dist = BLE_SM_PAIR_KEY_DIST_ENC | BLE_SM_PAIR_KEY_DIST_ID;
     ble_hs_cfg.reset_cb = joycon2_on_reset;
     ble_hs_cfg.sync_cb = joycon2_on_sync;
+    ble_store_config_init();
+    load_known_controllers();
     nimble_port_freertos_init(joycon2_host_task);
 }
 
