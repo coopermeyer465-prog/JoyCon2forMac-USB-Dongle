@@ -442,10 +442,10 @@ void app_main(void) {
     ESP_LOGI(TAG, "Starting JoyCon2forMac ESP32-S3 dongle (scaffold)");
     status_led_init();
     // LED patterns: slow=scanning, fast=found/connecting, double=connected, solid=input flowing.
-    xTaskCreate(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL);
+    xTaskCreatePinnedToCore(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL, 1);
     s_state_mutex = xSemaphoreCreateMutex();
     usb_hid_gamepad_init();
-    xTaskCreate(usb_report_task, "usb_report", 4096, NULL, 2, NULL);
+    xTaskCreatePinnedToCore(usb_report_task, "usb_report", 4096, NULL, 2, NULL, 1);
     joycon2_ble_set_status_callback(on_ble_status);
     joycon2_ble_start(on_joycon_state);
 

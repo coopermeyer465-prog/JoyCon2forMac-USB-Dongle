@@ -53,6 +53,7 @@ static bool s_connecting = false;
 static bool s_scanning = false;
 static bool s_ble_synced = false;
 static TickType_t s_last_scan_start_at = 0;
+static joycon_conn_t *s_pending_connect = NULL;
 
 static const ble_uuid128_t kWriteUUID =
     BLE_UUID128_INIT(0x05, 0xF0, 0xE5, 0x4F, 0xA5, 0x1E, 0x44, 0xAF,
@@ -288,6 +289,7 @@ static bool adv_is_joycon2(const struct ble_gap_disc_desc *desc, char *name, siz
 }
 
 static void joycon2_scan_start(void);
+static void joycon2_start_pending_connect(void);
 static int joycon2_gap_event(struct ble_gap_event *event, void *arg);
 static int joycon2_mtu_cb(uint16_t conn_handle, const struct ble_gatt_error *error, uint16_t mtu, void *arg);
 static int joycon2_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error, const struct ble_gatt_chr *chr, void *arg);
@@ -503,19 +505,28 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             new_ctx->connecting = true;
             s_connecting = true;
             s_scanning = false;
+            s_pending_connect = new_ctx;
             emit_status(JOYCON2_BLE_STATUS_FOUND);
-            ESP_LOGI(TAG, "Found %s; connecting...", new_ctx->name);
-            ble_gap_disc_cancel();
-            int rc = ble_gap_connect(s_own_addr_type, &new_ctx->addr, 30000, NULL, joycon2_gap_event, new_ctx);
+            ESP_LOGI(TAG, "Found %s; stopping scan before connect...", new_ctx->name);
+            int rc = ble_gap_disc_cancel();
             if (rc != 0) {
-                ESP_LOGW(TAG, "connect failed rc=%d; restarting scan", rc);
-                s_connecting = false;
-                release_ctx(new_ctx);
-                joycon2_scan_start();
+                ESP_LOGW(TAG, "scan cancel failed rc=%d; connecting anyway", rc);
+                joycon2_start_pending_connect();
             }
             return 0;
         }
+        case BLE_GAP_EVENT_DISC_COMPLETE:
+            s_scanning = false;
+            if (s_pending_connect) {
+                joycon2_start_pending_connect();
+                return 0;
+            }
+            if (!s_connecting && !setup_in_progress() && free_slot_exists()) {
+                joycon2_scan_start();
+            }
+            return 0;
         case BLE_GAP_EVENT_CONNECT: {
+            s_pending_connect = NULL;
             s_connecting = false;
             if (!ctx) {
                 return 0;
@@ -523,6 +534,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             ctx->connecting = false;
             if (event->connect.status != 0) {
                 ESP_LOGW(TAG, "[%s] Connect failed status=%d", ctx->name, event->connect.status);
+                s_connecting = false;
                 release_ctx(ctx);
                 joycon2_scan_start();
                 return 0;
@@ -546,12 +558,6 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             joycon2_scan_start();
             return 0;
         }
-        case BLE_GAP_EVENT_DISC_COMPLETE:
-            s_scanning = false;
-            if (!s_connecting && !setup_in_progress() && free_slot_exists()) {
-                joycon2_scan_start();
-            }
-            return 0;
         case BLE_GAP_EVENT_NOTIFY_RX: {
             joycon_conn_t *notify_ctx = ctx_for_handle(event->notify_rx.conn_handle);
             if (!notify_ctx) {
@@ -617,6 +623,25 @@ static void joycon2_scan_start(void) {
         s_scanning = true;
         s_last_scan_start_at = xTaskGetTickCount();
         emit_status(JOYCON2_BLE_STATUS_SCANNING);
+    }
+}
+
+static void joycon2_start_pending_connect(void) {
+    joycon_conn_t *ctx = s_pending_connect;
+    if (!ctx) {
+        s_connecting = false;
+        joycon2_scan_start();
+        return;
+    }
+
+    s_pending_connect = NULL;
+    ESP_LOGI(TAG, "Connecting to %s...", ctx->name);
+    int rc = ble_gap_connect(s_own_addr_type, &ctx->addr, 30000, NULL, joycon2_gap_event, ctx);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "[%s] connect start failed rc=%d; restarting scan", ctx->name, rc);
+        s_connecting = false;
+        release_ctx(ctx);
+        joycon2_scan_start();
     }
 }
 
