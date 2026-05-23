@@ -518,6 +518,18 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             }
             ctx->conn_handle = event->connect.conn_handle;
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
+            struct ble_gap_upd_params params = {
+                .itvl_min = 6,   // 7.5 ms
+                .itvl_max = 12,  // 15 ms
+                .latency = 0,
+                .supervision_timeout = 200, // 2 seconds
+                .min_ce_len = 0,
+                .max_ce_len = 0,
+            };
+            int upd_rc = ble_gap_update_params(ctx->conn_handle, &params);
+            if (upd_rc != 0) {
+                ESP_LOGW(TAG, "[%s] conn param update failed rc=%d", ctx->name, upd_rc);
+            }
             int rc = ble_gattc_exchange_mtu(ctx->conn_handle, joycon2_mtu_cb, ctx);
             if (rc != 0) {
                 joycon2_start_characteristic_discovery(ctx);

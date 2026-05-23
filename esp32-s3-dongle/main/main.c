@@ -269,7 +269,9 @@ static uint32_t apply_button_latch_locked(uint32_t buttons) {
     for (int i = 0; i < 32; i++) {
         uint32_t bit = 1UL << i;
         if ((pressed & bit) != 0) {
-            s_button_latch_until[i] = now + pdMS_TO_TICKS(55);
+            // Hold very fast taps long enough for Steam/browser gamepad polling
+            // to observe them, while real held buttons still track normally.
+            s_button_latch_until[i] = now + pdMS_TO_TICKS(120);
         }
         if ((buttons & bit) == 0 &&
             s_button_latch_until[i] != 0 &&
@@ -321,17 +323,16 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->last_mouse_y = st->mouse_y;
     }
 
-    // Optical mode reports absolute-ish counters. Ignore tiny drift and impossible jumps.
-    if (abs(dx) > 96 || abs(dy) > 96) {
+    // Optical mode reports absolute-ish counters. Ignore impossible jumps only;
+    // small movement should still wake mouse mode or it feels dead.
+    if (abs(dx) > 160 || abs(dy) > 160) {
         dx = 0;
         dy = 0;
     }
-    if (abs(dx) <= 1) dx = 0;
-    if (abs(dy) <= 1) dy = 0;
 
     if (dx != 0 || dy != 0) {
         slot->last_optical_motion_at = xTaskGetTickCount();
-        slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(350);
+        slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
     }
 
     bool active = slot->mouse_mode_until != 0 &&
@@ -346,10 +347,10 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
 
     // Keep this low latency. A little smoothing removes single-sample grit without
     // making the cursor feel like it is dragging behind the Joy-Con.
-    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.18) + ((double)dx * 0.82);
-    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.18) + ((double)dy * 0.82);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 2.0));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 2.0));
+    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.08) + ((double)dx * 0.92);
+    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
@@ -458,7 +459,7 @@ static void usb_report_task(void *param) {
             usb_hid_gamepad_send(&r);
             usb_hid_mouse_send(&m);
         }
-        vTaskDelay(pdMS_TO_TICKS(5));
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
