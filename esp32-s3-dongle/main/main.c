@@ -6,6 +6,7 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "joycon2_ble.h"
@@ -215,6 +216,7 @@ typedef struct {
 
 static device_slot_t s_left;
 static device_slot_t s_right;
+static SemaphoreHandle_t s_state_mutex;
 
 static bool is_right_state(const joycon2_state_t *st) {
     if (st->is_right) return true;
@@ -275,8 +277,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->last_mouse_y = st->mouse_y;
     }
 
-    // Optical mode reports real deltas here. Ignore tiny drift and impossible jumps.
-    if (abs(dx) > 40 || abs(dy) > 40) {
+    // Optical mode reports absolute-ish counters. Ignore tiny drift and impossible jumps.
+    if (abs(dx) > 96 || abs(dy) > 96) {
         dx = 0;
         dy = 0;
     }
@@ -284,16 +286,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     if (abs(dy) <= 1) dy = 0;
 
     if (dx != 0 || dy != 0) {
-        if (slot->optical_motion_confidence < 4) {
-            slot->optical_motion_confidence++;
-        }
         slot->last_optical_motion_at = xTaskGetTickCount();
-    } else if (slot->optical_motion_confidence > 0) {
-        slot->optical_motion_confidence--;
-    }
-
-    if (slot->optical_motion_confidence >= 2) {
-        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(220);
+        slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(350);
     }
 
     bool active = slot->mouse_mode_until != 0 &&
@@ -303,23 +297,15 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->smooth_mouse_x = 0.0;
         slot->smooth_mouse_y = 0.0;
         slot->mouse_warmup_samples = 0;
-        slot->optical_motion_confidence = 0;
         return false;
     }
 
-    if (slot->mouse_warmup_samples < 1) {
-        slot->mouse_warmup_samples++;
-        slot->smooth_mouse_x = 0.0;
-        slot->smooth_mouse_y = 0.0;
-        mouse->buttons = 0;
-        return true;
-    }
-
-    // Almost raw output for low latency; one-packet smoothing only softens noise.
-    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.08) + ((double)dx * 0.92);
-    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 1.15));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 1.15));
+    // Keep this low latency. A little smoothing removes single-sample grit without
+    // making the cursor feel like it is dragging behind the Joy-Con.
+    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.18) + ((double)dx * 0.82);
+    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.18) + ((double)dy * 0.82);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 2.0));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 2.0));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
@@ -327,11 +313,58 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     return true;
 }
 
+static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool mouse_mode) {
+    if (!r) return;
+    memset(r, 0, sizeof(*r));
+    uint32_t buttons = merged_buttons();
+
+    // In right Joy-Con mouse mode, R/ZR are mouse buttons, not gamepad buttons.
+    if (mouse_mode) {
+        buttons &= ~(BTN_R | BTN_ZR);
+    }
+
+    r->hat = hat_from_buttons(buttons);
+
+    // Use Joy-Con labels for Steam's manual setup prompts.
+    if (buttons & BTN_A) r->buttons |= (1u << 0);       // A
+    if (buttons & BTN_B) r->buttons |= (1u << 1);       // B
+    if (buttons & BTN_X) r->buttons |= (1u << 2);       // X
+    if (buttons & BTN_Y) r->buttons |= (1u << 3);       // Y
+    if (buttons & BTN_L) r->buttons |= (1u << 4);       // L
+    if (buttons & BTN_R) r->buttons |= (1u << 5);       // R
+    if (buttons & BTN_ZL) r->buttons |= (1u << 6);      // ZL
+    if (buttons & BTN_ZR) r->buttons |= (1u << 7);      // ZR
+    if (buttons & BTN_SELECT) r->buttons |= (1u << 8);  // Minus
+    if (buttons & BTN_START) r->buttons |= (1u << 9);   // Plus
+    if (buttons & BTN_LS) r->buttons |= (1u << 10);     // LS
+    if (buttons & BTN_RS) r->buttons |= (1u << 11);     // RS
+    if (buttons & BTN_HOME) r->buttons |= (1u << 12);   // Home
+    if (buttons & BTN_CAMERA) r->buttons |= (1u << 13); // Capture
+    if (buttons & BTN_CHAT) r->buttons |= (1u << 14);   // GameChat
+    if (buttons & BTN_SL_L) r->buttons |= (1u << 15);   // SL(L)
+    if (buttons & BTN_SR_L) r->buttons |= (1u << 16);   // SR(L)
+    if (buttons & BTN_SL_R) r->buttons |= (1u << 17);   // SL(R)
+    if (buttons & BTN_SR_R) r->buttons |= (1u << 18);   // SR(R)
+
+    r->lx = normalize_12bit_axis(latest_left_x(), false);
+    r->ly = normalize_12bit_axis(latest_left_y(), true);
+    r->rx = normalize_12bit_axis(latest_right_x(), false);
+    r->ry = normalize_12bit_axis(latest_right_y(), true);
+    if (s_right.valid) {
+        r->gyro_x = normalize_motion_axis(s_right.state.gyro_y, false);
+        r->gyro_y = normalize_motion_axis(s_right.state.gyro_x, true);
+    }
+}
+
 static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
 
     // Any incoming state indicates we are connected + receiving notifications.
     s_led_mode = LED_MODE_NOTIFICATIONS;
+
+    if (s_state_mutex) {
+        xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+    }
 
     if (is_right_state(st)) {
         s_right.state = *st;
@@ -345,51 +378,33 @@ static void on_joycon_state(const joycon2_state_t *st) {
         s_left.valid = true;
     }
 
-    usb_mouse_report_t m = {0};
-    bool mouse_mode = right_mouse_active(&s_right, &m);
-
-    usb_gamepad_report_t r = {0};
-    uint32_t buttons = merged_buttons();
-
-    // In right Joy-Con mouse mode, R/ZR are mouse buttons, not gamepad buttons.
-    if (mouse_mode) {
-        buttons &= ~(BTN_R | BTN_ZR);
+    if (s_state_mutex) {
+        xSemaphoreGive(s_state_mutex);
     }
+}
 
-    r.hat = hat_from_buttons(buttons);
+static void usb_report_task(void *param) {
+    (void)param;
+    while (1) {
+        usb_mouse_report_t m = {0};
+        usb_gamepad_report_t r = {0};
+        bool mouse_mode = false;
 
-    // Use Joy-Con labels for Steam's manual setup prompts.
-    if (buttons & BTN_A) r.buttons |= (1u << 0);       // A
-    if (buttons & BTN_B) r.buttons |= (1u << 1);       // B
-    if (buttons & BTN_X) r.buttons |= (1u << 2);       // X
-    if (buttons & BTN_Y) r.buttons |= (1u << 3);       // Y
-    if (buttons & BTN_L) r.buttons |= (1u << 4);       // L
-    if (buttons & BTN_R) r.buttons |= (1u << 5);       // R
-    if (buttons & BTN_ZL) r.buttons |= (1u << 6);      // ZL
-    if (buttons & BTN_ZR) r.buttons |= (1u << 7);      // ZR
-    if (buttons & BTN_SELECT) r.buttons |= (1u << 8);  // Minus
-    if (buttons & BTN_START) r.buttons |= (1u << 9);   // Plus
-    if (buttons & BTN_LS) r.buttons |= (1u << 10);     // LS
-    if (buttons & BTN_RS) r.buttons |= (1u << 11);     // RS
-    if (buttons & BTN_HOME) r.buttons |= (1u << 12);   // Home
-    if (buttons & BTN_CAMERA) r.buttons |= (1u << 13); // Capture
-    if (buttons & BTN_CHAT) r.buttons |= (1u << 14);   // GameChat
-    if (buttons & BTN_SL_L) r.buttons |= (1u << 15);   // SL(L)
-    if (buttons & BTN_SR_L) r.buttons |= (1u << 16);   // SR(L)
-    if (buttons & BTN_SL_R) r.buttons |= (1u << 17);   // SL(R)
-    if (buttons & BTN_SR_R) r.buttons |= (1u << 18);   // SR(R)
+        if (s_state_mutex) {
+            xSemaphoreTake(s_state_mutex, portMAX_DELAY);
+        }
 
-    r.lx = normalize_12bit_axis(latest_left_x(), false);
-    r.ly = normalize_12bit_axis(latest_left_y(), true);
-    r.rx = normalize_12bit_axis(latest_right_x(), false);
-    r.ry = normalize_12bit_axis(latest_right_y(), true);
-    if (s_right.valid) {
-        r.gyro_x = normalize_motion_axis(s_right.state.gyro_y, false);
-        r.gyro_y = normalize_motion_axis(s_right.state.gyro_x, true);
+        mouse_mode = right_mouse_active(&s_right, &m);
+        build_gamepad_report_locked(&r, mouse_mode);
+
+        if (s_state_mutex) {
+            xSemaphoreGive(s_state_mutex);
+        }
+
+        usb_hid_gamepad_send(&r);
+        usb_hid_mouse_send(&m);
+        vTaskDelay(pdMS_TO_TICKS(4));
     }
-
-    usb_hid_gamepad_send(&r);
-    usb_hid_mouse_send(&m);
 }
 
 void app_main(void) {
@@ -397,7 +412,9 @@ void app_main(void) {
     status_led_init();
     // LED patterns: slow=scanning, fast=found/connecting, double=connected, solid=input flowing.
     xTaskCreate(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL);
+    s_state_mutex = xSemaphoreCreateMutex();
     usb_hid_gamepad_init();
+    xTaskCreate(usb_report_task, "usb_report", 4096, NULL, 5, NULL);
     joycon2_ble_set_status_callback(on_ble_status);
     joycon2_ble_start(on_joycon_state);
 
