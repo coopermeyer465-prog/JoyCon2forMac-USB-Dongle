@@ -219,6 +219,26 @@ static int8_t clamp_i16_to_i8(int v) {
     return (int8_t)v;
 }
 
+static int right_stick_mouse_delta(uint16_t raw, bool invert) {
+    double n = ((double)raw - 2047.0) / 2047.0;
+    if (n < -1.0) n = -1.0;
+    if (n > 1.0) n = 1.0;
+    if (invert) n = -n;
+
+    const double deadzone = 0.12;
+    double mag = fabs(n);
+    if (mag < deadzone) {
+        return 0;
+    }
+
+    double curved = pow((mag - deadzone) / (1.0 - deadzone), 1.45);
+    int delta = (int)llround(copysign(curved * 7.0, n));
+    if (delta == 0) {
+        delta = n > 0 ? 1 : -1;
+    }
+    return delta;
+}
+
 typedef struct {
     joycon2_state_t state;
     bool valid;
@@ -311,6 +331,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
 
     int dx = 0;
     int dy = 0;
+    int stick_dx = right_stick_mouse_delta(st->right_x, false);
+    int stick_dy = right_stick_mouse_delta(st->right_y, true);
 
     if (!slot->has_mouse_sample) {
         slot->last_mouse_x = st->mouse_x;
@@ -330,7 +352,7 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         dy = 0;
     }
 
-    if (dx != 0 || dy != 0) {
+    if (dx != 0 || dy != 0 || stick_dx != 0 || stick_dy != 0) {
         slot->last_optical_motion_at = xTaskGetTickCount();
         slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
     }
@@ -349,8 +371,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     // making the cursor feel like it is dragging behind the Joy-Con.
     slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.08) + ((double)dx * 0.92);
     slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5));
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5) + stick_dx);
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5) + stick_dy);
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
