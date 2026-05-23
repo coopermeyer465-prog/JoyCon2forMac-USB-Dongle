@@ -99,8 +99,9 @@ static void status_led_blink_task(void *param) {
                 status_led_pulse(80, 520);
                 break;
             case LED_MODE_NOTIFICATIONS:
-                status_led_set(true);
-                vTaskDelay(pdMS_TO_TICKS(1000));
+                status_led_pulse(35, 65);
+                status_led_pulse(35, 65);
+                status_led_pulse(35, 865);
                 break;
         }
     }
