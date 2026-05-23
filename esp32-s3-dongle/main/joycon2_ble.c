@@ -569,6 +569,13 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
 
             joycon2_state_t st;
             if (parse_packet(packet, len, notify_ctx->side, &st) && s_cb) {
+                if (notify_ctx->side == JOYCON_SIDE_RIGHT) {
+                    st.is_right = true;
+                    st.is_left = false;
+                } else if (notify_ctx->side == JOYCON_SIDE_LEFT) {
+                    st.is_left = true;
+                    st.is_right = false;
+                }
                 if (event->notify_rx.attr_handle != notify_ctx->notify_handle) {
                     ESP_LOGI(TAG, "[%s] Promoting notify handle %u -> %u",
                              notify_ctx->name, notify_ctx->notify_handle, event->notify_rx.attr_handle);

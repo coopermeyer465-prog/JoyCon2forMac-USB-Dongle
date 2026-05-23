@@ -352,7 +352,15 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         dy = 0;
     }
 
-    if (dx != 0 || dy != 0 || stick_dx != 0 || stick_dy != 0) {
+    if (stick_dx != 0 || stick_dy != 0) {
+        mouse->x = clamp_i16_to_i8(stick_dx);
+        mouse->y = clamp_i16_to_i8(stick_dy);
+        if (st->buttons & BTN_R) mouse->buttons |= 0x01;
+        if (st->buttons & BTN_ZR) mouse->buttons |= 0x02;
+        return true;
+    }
+
+    if (dx != 0 || dy != 0) {
         slot->last_optical_motion_at = xTaskGetTickCount();
         slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
     }
@@ -371,8 +379,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     // making the cursor feel like it is dragging behind the Joy-Con.
     slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.08) + ((double)dx * 0.92);
     slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5) + stick_dx);
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5) + stick_dy);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
