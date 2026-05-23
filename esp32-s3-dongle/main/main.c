@@ -31,6 +31,8 @@ typedef enum {
 } led_mode_t;
 
 static volatile led_mode_t s_led_mode = LED_MODE_SCANNING;
+static volatile led_mode_t s_last_ble_mode = LED_MODE_SCANNING;
+static volatile TickType_t s_last_real_input_at = 0;
 
 static void status_led_init(void) {
     gpio_config_t cfg = {
@@ -60,7 +62,14 @@ static void status_led_pulse(int on_ms, int off_ms) {
 static void status_led_blink_task(void *param) {
     (void)param;
     while (1) {
-        switch (s_led_mode) {
+        led_mode_t mode = s_led_mode;
+        if (mode == LED_MODE_NOTIFICATIONS &&
+            (s_last_real_input_at == 0 ||
+             (int32_t)(xTaskGetTickCount() - s_last_real_input_at) > (int32_t)pdMS_TO_TICKS(1500))) {
+            mode = s_last_ble_mode;
+            s_led_mode = mode;
+        }
+        switch (mode) {
             case LED_MODE_SCANNING:
                 status_led_pulse(80, 920);
                 break;
@@ -101,25 +110,34 @@ static void on_ble_status(joycon2_ble_status_t status) {
     switch (status) {
         case JOYCON2_BLE_STATUS_SCANNING:
         case JOYCON2_BLE_STATUS_DISCONNECTED:
-            s_led_mode = LED_MODE_SCANNING;
+            s_last_ble_mode = LED_MODE_SCANNING;
+            s_led_mode = s_last_ble_mode;
             break;
         case JOYCON2_BLE_STATUS_FOUND:
-            s_led_mode = LED_MODE_FOUND;
+            s_last_ble_mode = LED_MODE_FOUND;
+            s_led_mode = s_last_ble_mode;
             break;
         case JOYCON2_BLE_STATUS_CONNECTED:
-            s_led_mode = LED_MODE_CONNECTED;
+            s_last_ble_mode = LED_MODE_CONNECTED;
+            s_led_mode = s_last_ble_mode;
             break;
         case JOYCON2_BLE_STATUS_SUBSCRIBED:
-            s_led_mode = LED_MODE_SUBSCRIBED;
+            s_last_ble_mode = LED_MODE_SUBSCRIBED;
+            s_led_mode = s_last_ble_mode;
             break;
         case JOYCON2_BLE_STATUS_NOTIFY_OTHER:
-            s_led_mode = LED_MODE_NOTIFY_OTHER;
+            s_last_ble_mode = LED_MODE_NOTIFY_OTHER;
+            s_led_mode = s_last_ble_mode;
             break;
         case JOYCON2_BLE_STATUS_PACKET_REJECTED:
-            s_led_mode = LED_MODE_PACKET_REJECTED;
+            s_last_ble_mode = LED_MODE_PACKET_REJECTED;
+            s_led_mode = s_last_ble_mode;
             break;
         case JOYCON2_BLE_STATUS_NOTIFYING:
-            s_led_mode = LED_MODE_NOTIFICATIONS;
+            if (s_last_real_input_at != 0 &&
+                (int32_t)(xTaskGetTickCount() - s_last_real_input_at) <= (int32_t)pdMS_TO_TICKS(1500)) {
+                s_led_mode = LED_MODE_NOTIFICATIONS;
+            }
             break;
     }
 }
@@ -384,9 +402,7 @@ static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool mouse_mode
 
 static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
-
-    // Any incoming state indicates we are connected + receiving notifications.
-    s_led_mode = LED_MODE_NOTIFICATIONS;
+    bool accepted = false;
 
     if (s_state_mutex) {
         xSemaphoreTake(s_state_mutex, portMAX_DELAY);
@@ -397,15 +413,22 @@ static void on_joycon_state(const joycon2_state_t *st) {
         s_right.state.is_right = true;
         s_right.state.is_left = false;
         s_right.valid = true;
+        accepted = true;
     } else if (is_left_state(st)) {
         s_left.state = *st;
         s_left.state.is_left = true;
         s_left.state.is_right = false;
         s_left.valid = true;
+        accepted = true;
     }
 
     if (s_state_mutex) {
         xSemaphoreGive(s_state_mutex);
+    }
+
+    if (accepted) {
+        s_last_real_input_at = xTaskGetTickCount();
+        s_led_mode = LED_MODE_NOTIFICATIONS;
     }
 }
 
