@@ -210,6 +210,7 @@ typedef struct {
     TickType_t last_optical_motion_at;
     TickType_t mouse_mode_until;
     uint8_t mouse_warmup_samples;
+    uint8_t optical_motion_confidence;
 } device_slot_t;
 
 static device_slot_t s_left;
@@ -260,7 +261,6 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         return false;
     }
 
-    bool sensor_present = st->mouse_distance > 0;
     int dx = 0;
     int dy = 0;
 
@@ -276,42 +276,38 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     }
 
     // Optical mode reports real deltas here. Ignore tiny drift and impossible jumps.
-    if (abs(dx) > 48 || abs(dy) > 48) {
+    if (abs(dx) > 40 || abs(dy) > 40) {
         dx = 0;
         dy = 0;
     }
-    if (abs(dx) <= 2) dx = 0;
-    if (abs(dy) <= 2) dy = 0;
+    if (abs(dx) <= 1) dx = 0;
+    if (abs(dy) <= 1) dy = 0;
 
-    if (sensor_present) {
-        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(500);
+    if (dx != 0 || dy != 0) {
+        if (slot->optical_motion_confidence < 4) {
+            slot->optical_motion_confidence++;
+        }
+        slot->last_optical_motion_at = xTaskGetTickCount();
+    } else if (slot->optical_motion_confidence > 0) {
+        slot->optical_motion_confidence--;
+    }
+
+    if (slot->optical_motion_confidence >= 2) {
+        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(220);
     }
 
     bool active = slot->mouse_mode_until != 0 &&
                   (int32_t)(slot->mouse_mode_until - xTaskGetTickCount()) > 0;
 
-    if (active && (dx != 0 || dy != 0)) {
-        if (dx != 0 || dy != 0) {
-            slot->last_optical_motion_at = xTaskGetTickCount();
-        }
-    }
-
-    // If the right Joy-Con is already acting like a mouse, keep clicks mapped
-    // briefly even after motion pauses so click/drag works naturally.
-    if ((st->buttons & (BTN_R | BTN_ZR)) != 0 &&
-        slot->last_optical_motion_at != 0 &&
-        (int32_t)((slot->last_optical_motion_at + pdMS_TO_TICKS(5000)) - xTaskGetTickCount()) > 0) {
-        slot->mouse_mode_until = xTaskGetTickCount() + pdMS_TO_TICKS(1600);
-    }
-
     if (!active) {
         slot->smooth_mouse_x = 0.0;
         slot->smooth_mouse_y = 0.0;
         slot->mouse_warmup_samples = 0;
+        slot->optical_motion_confidence = 0;
         return false;
     }
 
-    if (slot->mouse_warmup_samples < 3) {
+    if (slot->mouse_warmup_samples < 1) {
         slot->mouse_warmup_samples++;
         slot->smooth_mouse_x = 0.0;
         slot->smooth_mouse_y = 0.0;
@@ -319,11 +315,11 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         return true;
     }
 
-    // Very light smoothing: low latency, but enough to soften single-packet blips.
-    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.20) + ((double)dx * 0.80);
-    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.20) + ((double)dy * 0.80);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 1.4));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 1.4));
+    // Almost raw output for low latency; one-packet smoothing only softens noise.
+    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.08) + ((double)dx * 0.92);
+    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
+    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 1.15));
+    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 1.15));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
@@ -362,12 +358,11 @@ static void on_joycon_state(const joycon2_state_t *st) {
 
     r.hat = hat_from_buttons(buttons);
 
-    // Steam/Web Gamepad physical layout: 0=bottom, 1=right, 2=left, 3=top.
-    // Nintendo labels by physical position: B=bottom, A=right, Y=left, X=top.
-    if (buttons & BTN_B) r.buttons |= (1u << 0);       // South / B
-    if (buttons & BTN_A) r.buttons |= (1u << 1);       // East / A
-    if (buttons & BTN_Y) r.buttons |= (1u << 2);       // West / Y
-    if (buttons & BTN_X) r.buttons |= (1u << 3);       // North / X
+    // Use Joy-Con labels for Steam's manual setup prompts.
+    if (buttons & BTN_A) r.buttons |= (1u << 0);       // A
+    if (buttons & BTN_B) r.buttons |= (1u << 1);       // B
+    if (buttons & BTN_X) r.buttons |= (1u << 2);       // X
+    if (buttons & BTN_Y) r.buttons |= (1u << 3);       // Y
     if (buttons & BTN_L) r.buttons |= (1u << 4);       // L
     if (buttons & BTN_R) r.buttons |= (1u << 5);       // R
     if (buttons & BTN_ZL) r.buttons |= (1u << 6);      // ZL
