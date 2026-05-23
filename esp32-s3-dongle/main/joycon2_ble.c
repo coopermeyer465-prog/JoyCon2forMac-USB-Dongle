@@ -51,6 +51,7 @@ static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static joycon_conn_t s_conns[2];
 static bool s_connecting = false;
 static bool s_scanning = false;
+static TickType_t s_last_scan_start_at = 0;
 
 static const ble_uuid128_t kWriteUUID =
     BLE_UUID128_INIT(0x05, 0xF0, 0xE5, 0x4F, 0xA5, 0x1E, 0x44, 0xAF,
@@ -538,6 +539,12 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             joycon2_scan_start();
             return 0;
         }
+        case BLE_GAP_EVENT_DISC_COMPLETE:
+            s_scanning = false;
+            if (!s_connecting && free_slot_exists()) {
+                joycon2_scan_start();
+            }
+            return 0;
         case BLE_GAP_EVENT_NOTIFY_RX: {
             joycon_conn_t *notify_ctx = ctx_for_handle(event->notify_rx.conn_handle);
             if (!notify_ctx) {
@@ -598,9 +605,33 @@ static void joycon2_scan_start(void) {
     int rc = ble_gap_disc(s_own_addr_type, BLE_HS_FOREVER, &params, joycon2_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_gap_disc failed rc=%d", rc);
+        s_scanning = false;
     } else {
         s_scanning = true;
+        s_last_scan_start_at = xTaskGetTickCount();
         emit_status(JOYCON2_BLE_STATUS_SCANNING);
+    }
+}
+
+static void joycon2_scan_watchdog_task(void *param) {
+    (void)param;
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(6000));
+        if (!free_slot_exists() || s_connecting) {
+            continue;
+        }
+        if (!s_scanning) {
+            joycon2_scan_start();
+            continue;
+        }
+        if (s_last_scan_start_at != 0 &&
+            (int32_t)(xTaskGetTickCount() - s_last_scan_start_at) > (int32_t)pdMS_TO_TICKS(12000)) {
+            ESP_LOGW(TAG, "Restarting stale BLE scan");
+            s_scanning = false;
+            (void)ble_gap_disc_cancel();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            joycon2_scan_start();
+        }
     }
 }
 
@@ -637,6 +668,7 @@ void joycon2_ble_start(joycon2_state_cb_t cb) {
     ble_svc_gap_device_name_set("JoyCon2 Dongle");
     ble_hs_cfg.reset_cb = joycon2_on_reset;
     ble_hs_cfg.sync_cb = joycon2_on_sync;
+    xTaskCreate(joycon2_scan_watchdog_task, "joycon_scan_watch", 3072, NULL, 3, NULL);
     nimble_port_freertos_init(joycon2_host_task);
 }
 

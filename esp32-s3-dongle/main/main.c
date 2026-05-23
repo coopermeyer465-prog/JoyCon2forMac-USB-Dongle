@@ -217,6 +217,8 @@ typedef struct {
 static device_slot_t s_left;
 static device_slot_t s_right;
 static SemaphoreHandle_t s_state_mutex;
+static uint32_t s_previous_buttons;
+static TickType_t s_button_latch_until[32];
 
 static bool is_right_state(const joycon2_state_t *st) {
     if (st->is_right) return true;
@@ -234,6 +236,29 @@ static uint32_t merged_buttons(void) {
     uint32_t buttons = 0;
     if (s_left.valid) buttons |= s_left.state.buttons;
     if (s_right.valid) buttons |= s_right.state.buttons;
+    return buttons;
+}
+
+static bool any_controller_valid(void) {
+    return s_left.valid || s_right.valid;
+}
+
+static uint32_t apply_button_latch_locked(uint32_t buttons) {
+    uint32_t raw_buttons = buttons;
+    TickType_t now = xTaskGetTickCount();
+    uint32_t pressed = raw_buttons & ~s_previous_buttons;
+    for (int i = 0; i < 32; i++) {
+        uint32_t bit = 1UL << i;
+        if ((pressed & bit) != 0) {
+            s_button_latch_until[i] = now + pdMS_TO_TICKS(55);
+        }
+        if ((buttons & bit) == 0 &&
+            s_button_latch_until[i] != 0 &&
+            (int32_t)(s_button_latch_until[i] - now) > 0) {
+            buttons |= bit;
+        }
+    }
+    s_previous_buttons = raw_buttons;
     return buttons;
 }
 
@@ -322,6 +347,7 @@ static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool mouse_mode
     if (mouse_mode) {
         buttons &= ~(BTN_R | BTN_ZR);
     }
+    buttons = apply_button_latch_locked(buttons);
 
     r->hat = hat_from_buttons(buttons);
 
@@ -394,16 +420,21 @@ static void usb_report_task(void *param) {
             xSemaphoreTake(s_state_mutex, portMAX_DELAY);
         }
 
-        mouse_mode = right_mouse_active(&s_right, &m);
-        build_gamepad_report_locked(&r, mouse_mode);
+        bool has_controller = any_controller_valid();
+        if (has_controller) {
+            mouse_mode = right_mouse_active(&s_right, &m);
+            build_gamepad_report_locked(&r, mouse_mode);
+        }
 
         if (s_state_mutex) {
             xSemaphoreGive(s_state_mutex);
         }
 
-        usb_hid_gamepad_send(&r);
-        usb_hid_mouse_send(&m);
-        vTaskDelay(pdMS_TO_TICKS(4));
+        if (r.buttons != 0 || has_controller) {
+            usb_hid_gamepad_send(&r);
+            usb_hid_mouse_send(&m);
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
 }
 
@@ -414,7 +445,7 @@ void app_main(void) {
     xTaskCreate(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL);
     s_state_mutex = xSemaphoreCreateMutex();
     usb_hid_gamepad_init();
-    xTaskCreate(usb_report_task, "usb_report", 4096, NULL, 5, NULL);
+    xTaskCreate(usb_report_task, "usb_report", 4096, NULL, 2, NULL);
     joycon2_ble_set_status_callback(on_ble_status);
     joycon2_ble_start(on_joycon_state);
 
