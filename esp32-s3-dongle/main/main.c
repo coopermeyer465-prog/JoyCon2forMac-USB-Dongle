@@ -308,9 +308,6 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     }
 
     joycon2_state_t *st = &slot->state;
-    if (!st->is_right) {
-        return false;
-    }
 
     int dx = 0;
     int dy = 0;
