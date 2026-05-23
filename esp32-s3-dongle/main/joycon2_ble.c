@@ -51,6 +51,7 @@ static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static joycon_conn_t s_conns[2];
 static bool s_connecting = false;
 static bool s_scanning = false;
+static bool s_ble_synced = false;
 static TickType_t s_last_scan_start_at = 0;
 
 static const ble_uuid128_t kWriteUUID =
@@ -140,6 +141,15 @@ static joycon_conn_t *alloc_ctx(void) {
 static bool free_slot_exists(void) {
     for (size_t i = 0; i < sizeof(s_conns) / sizeof(s_conns[0]); i++) {
         if (!s_conns[i].allocated) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool setup_in_progress(void) {
+    for (size_t i = 0; i < sizeof(s_conns) / sizeof(s_conns[0]); i++) {
+        if (s_conns[i].allocated && !s_conns[i].subscribed && !s_conns[i].notifying) {
             return true;
         }
     }
@@ -523,9 +533,6 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             if (rc != 0) {
                 joycon2_start_characteristic_discovery(ctx);
             }
-            // Resume scanning immediately so both Joy-Cons can be put into
-            // pairing mode at the same time; setup continues per connection.
-            joycon2_scan_start();
             return 0;
         }
         case BLE_GAP_EVENT_DISCONNECT: {
@@ -541,7 +548,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
         }
         case BLE_GAP_EVENT_DISC_COMPLETE:
             s_scanning = false;
-            if (!s_connecting && free_slot_exists()) {
+            if (!s_connecting && !setup_in_progress() && free_slot_exists()) {
                 joycon2_scan_start();
             }
             return 0;
@@ -591,7 +598,7 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
 }
 
 static void joycon2_scan_start(void) {
-    if (s_connecting || s_scanning || !free_slot_exists()) {
+    if (!s_ble_synced || s_connecting || s_scanning || setup_in_progress() || !free_slot_exists()) {
         return;
     }
 
@@ -617,7 +624,7 @@ static void joycon2_scan_watchdog_task(void *param) {
     (void)param;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(6000));
-        if (!free_slot_exists() || s_connecting) {
+        if (!s_ble_synced || !free_slot_exists() || s_connecting || setup_in_progress()) {
             continue;
         }
         if (!s_scanning) {
@@ -644,6 +651,7 @@ static void joycon2_on_sync(void) {
     if (rc != 0) {
         ESP_LOGW(TAG, "ble_hs_id_infer_auto rc=%d", rc);
     }
+    s_ble_synced = true;
     joycon2_scan_start();
 }
 
