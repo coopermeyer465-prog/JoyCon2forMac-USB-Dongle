@@ -182,7 +182,11 @@ static void infer_side_from_buttons(joycon2_state_t *st, joycon_side_t hint) {
 }
 
 static bool parse_packet(const uint8_t *data, size_t len, joycon_side_t side, joycon2_state_t *out) {
-    if (!data || !out || len < 7) {
+    // Setup/ACK notifications can be short and still contain bytes where the
+    // input report keeps buttons. Do not treat those as real controller input,
+    // or we can falsely mark the controller as notifying and promote the wrong
+    // BLE characteristic handle.
+    if (!data || !out || len < 0x18) {
         return false;
     }
 
