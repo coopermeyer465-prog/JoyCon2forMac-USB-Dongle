@@ -87,6 +87,30 @@ static bool addr_equal(const ble_addr_t *a, const ble_addr_t *b) {
     return a->type == b->type && memcmp(a->val, b->val, sizeof(a->val)) == 0;
 }
 
+static bool side_in_use(joycon_side_t side) {
+    if (side == JOYCON_SIDE_UNKNOWN) {
+        return false;
+    }
+    for (size_t i = 0; i < sizeof(s_conns) / sizeof(s_conns[0]); i++) {
+        if (s_conns[i].allocated && s_conns[i].side == side) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static joycon_side_t fallback_side_for_unknown(void) {
+    // Joy-Con 2 advertisements often do not expose L/R. Prefer right first so
+    // optical mouse mode can start before a side-specific button is pressed.
+    if (!side_in_use(JOYCON_SIDE_RIGHT)) {
+        return JOYCON_SIDE_RIGHT;
+    }
+    if (!side_in_use(JOYCON_SIDE_LEFT)) {
+        return JOYCON_SIDE_LEFT;
+    }
+    return JOYCON_SIDE_UNKNOWN;
+}
+
 static bool any_input_flowing(void) {
     for (size_t i = 0; i < sizeof(s_conns) / sizeof(s_conns[0]); i++) {
         if (s_conns[i].allocated && s_conns[i].notifying) {
@@ -481,6 +505,9 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             }
             if (ctx_for_addr(&event->disc.addr)) {
                 return 0;
+            }
+            if (side == JOYCON_SIDE_UNKNOWN) {
+                side = fallback_side_for_unknown();
             }
             joycon_conn_t *new_ctx = alloc_ctx();
             if (!new_ctx) {
