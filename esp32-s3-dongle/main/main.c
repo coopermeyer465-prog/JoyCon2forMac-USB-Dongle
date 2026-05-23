@@ -219,26 +219,6 @@ static int8_t clamp_i16_to_i8(int v) {
     return (int8_t)v;
 }
 
-static int right_stick_mouse_delta(uint16_t raw, bool invert) {
-    double n = ((double)raw - 2047.0) / 2047.0;
-    if (n < -1.0) n = -1.0;
-    if (n > 1.0) n = 1.0;
-    if (invert) n = -n;
-
-    const double deadzone = 0.12;
-    double mag = fabs(n);
-    if (mag < deadzone) {
-        return 0;
-    }
-
-    double curved = pow((mag - deadzone) / (1.0 - deadzone), 1.45);
-    int delta = (int)llround(copysign(curved * 7.0, n));
-    if (delta == 0) {
-        delta = n > 0 ? 1 : -1;
-    }
-    return delta;
-}
-
 typedef struct {
     joycon2_state_t state;
     bool valid;
@@ -249,6 +229,9 @@ typedef struct {
     double smooth_mouse_y;
     TickType_t last_optical_motion_at;
     TickType_t mouse_mode_until;
+    TickType_t optical_stick_until;
+    int8_t optical_stick_x;
+    int8_t optical_stick_y;
     uint8_t mouse_warmup_samples;
     uint8_t optical_motion_confidence;
 } device_slot_t;
@@ -331,8 +314,6 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
 
     int dx = 0;
     int dy = 0;
-    int stick_dx = right_stick_mouse_delta(st->right_x, false);
-    int stick_dy = right_stick_mouse_delta(st->right_y, true);
 
     if (!slot->has_mouse_sample) {
         slot->last_mouse_x = st->mouse_x;
@@ -352,17 +333,10 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         dy = 0;
     }
 
-    if (stick_dx != 0 || stick_dy != 0) {
-        mouse->x = clamp_i16_to_i8(stick_dx);
-        mouse->y = clamp_i16_to_i8(stick_dy);
-        if (st->buttons & BTN_R) mouse->buttons |= 0x01;
-        if (st->buttons & BTN_ZR) mouse->buttons |= 0x02;
-        return true;
-    }
-
     if (dx != 0 || dy != 0) {
         slot->last_optical_motion_at = xTaskGetTickCount();
         slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
+        slot->optical_stick_until = slot->last_optical_motion_at + pdMS_TO_TICKS(80);
     }
 
     bool active = slot->mouse_mode_until != 0 &&
@@ -381,6 +355,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
     mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5));
     mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5));
+    slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 24.0));
+    slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 24.0));
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
@@ -426,15 +402,39 @@ static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool mouse_mode
     r->ly = normalize_12bit_axis(latest_left_y(), true);
     r->rx = normalize_12bit_axis(latest_right_x(), false);
     r->ry = normalize_12bit_axis(latest_right_y(), true);
+    if (s_right.valid &&
+        s_right.optical_stick_until != 0 &&
+        (int32_t)(s_right.optical_stick_until - xTaskGetTickCount()) > 0) {
+        // In Joy-Con mouse mode, also expose optical motion as right-stick axes
+        // so games that only read controller camera input can still respond.
+        r->rx = s_right.optical_stick_x;
+        r->ry = s_right.optical_stick_y;
+    }
     if (s_right.valid) {
         r->gyro_x = normalize_motion_axis(s_right.state.gyro_y, false);
         r->gyro_y = normalize_motion_axis(s_right.state.gyro_x, true);
     }
 }
 
+static bool prepare_usb_reports_locked(usb_gamepad_report_t *r, usb_mouse_report_t *m) {
+    if (!r || !m) return false;
+    memset(r, 0, sizeof(*r));
+    memset(m, 0, sizeof(*m));
+    if (!any_controller_valid()) {
+        return false;
+    }
+
+    bool mouse_mode = right_mouse_active(&s_right, m);
+    build_gamepad_report_locked(r, mouse_mode);
+    return true;
+}
+
 static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
     bool accepted = false;
+    bool has_report = false;
+    usb_mouse_report_t m = {0};
+    usb_gamepad_report_t r = {0};
 
     if (s_state_mutex) {
         xSemaphoreTake(s_state_mutex, portMAX_DELAY);
@@ -454,6 +454,10 @@ static void on_joycon_state(const joycon2_state_t *st) {
         accepted = true;
     }
 
+    if (accepted) {
+        has_report = prepare_usb_reports_locked(&r, &m);
+    }
+
     if (s_state_mutex) {
         xSemaphoreGive(s_state_mutex);
     }
@@ -462,6 +466,10 @@ static void on_joycon_state(const joycon2_state_t *st) {
         s_last_real_input_at = xTaskGetTickCount();
         s_led_mode = LED_MODE_NOTIFICATIONS;
     }
+    if (has_report) {
+        usb_hid_gamepad_send(&r);
+        usb_hid_mouse_send(&m);
+    }
 }
 
 static void usb_report_task(void *param) {
@@ -469,17 +477,12 @@ static void usb_report_task(void *param) {
     while (1) {
         usb_mouse_report_t m = {0};
         usb_gamepad_report_t r = {0};
-        bool mouse_mode = false;
 
         if (s_state_mutex) {
             xSemaphoreTake(s_state_mutex, portMAX_DELAY);
         }
 
-        bool has_controller = any_controller_valid();
-        if (has_controller) {
-            mouse_mode = right_mouse_active(&s_right, &m);
-            build_gamepad_report_locked(&r, mouse_mode);
-        }
+        bool has_controller = prepare_usb_reports_locked(&r, &m);
 
         if (s_state_mutex) {
             xSemaphoreGive(s_state_mutex);
