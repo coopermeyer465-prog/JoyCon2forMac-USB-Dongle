@@ -227,9 +227,16 @@ typedef struct {
     int16_t last_mouse_y;
     double smooth_mouse_x;
     double smooth_mouse_y;
+    double mouse_step_x;
+    double mouse_step_y;
+    double mouse_residual_x;
+    double mouse_residual_y;
     TickType_t last_optical_motion_at;
     TickType_t mouse_mode_until;
     TickType_t optical_stick_until;
+    uint32_t mouse_sample_seq;
+    uint32_t processed_mouse_sample_seq;
+    uint8_t mouse_steps_left;
     int8_t optical_stick_x;
     int8_t optical_stick_y;
     uint8_t mouse_warmup_samples;
@@ -311,16 +318,19 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
 
     int dx = 0;
     int dy = 0;
+    bool has_new_sample = slot->mouse_sample_seq != slot->processed_mouse_sample_seq;
 
     if (!slot->has_mouse_sample) {
         slot->last_mouse_x = st->mouse_x;
         slot->last_mouse_y = st->mouse_y;
         slot->has_mouse_sample = true;
-    } else {
+        slot->processed_mouse_sample_seq = slot->mouse_sample_seq;
+    } else if (has_new_sample) {
         dx = (int)st->mouse_x - (int)slot->last_mouse_x;
         dy = (int)st->mouse_y - (int)slot->last_mouse_y;
         slot->last_mouse_x = st->mouse_x;
         slot->last_mouse_y = st->mouse_y;
+        slot->processed_mouse_sample_seq = slot->mouse_sample_seq;
     }
 
     // Optical mode reports absolute-ish counters. Ignore impossible jumps only;
@@ -334,6 +344,13 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->last_optical_motion_at = xTaskGetTickCount();
         slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
         slot->optical_stick_until = slot->last_optical_motion_at + pdMS_TO_TICKS(80);
+        slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.35) + ((double)dx * 0.65);
+        slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.35) + ((double)dy * 0.65);
+        slot->mouse_step_x = (slot->smooth_mouse_x * 3.0) / 6.0;
+        slot->mouse_step_y = (slot->smooth_mouse_y * 3.0) / 6.0;
+        slot->mouse_steps_left = 6;
+        slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 20.0));
+        slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 20.0));
     }
 
     bool active = slot->mouse_mode_until != 0 &&
@@ -342,18 +359,26 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     if (!active) {
         slot->smooth_mouse_x = 0.0;
         slot->smooth_mouse_y = 0.0;
+        slot->mouse_step_x = 0.0;
+        slot->mouse_step_y = 0.0;
+        slot->mouse_residual_x = 0.0;
+        slot->mouse_residual_y = 0.0;
+        slot->mouse_steps_left = 0;
         slot->mouse_warmup_samples = 0;
         return false;
     }
 
-    // Keep this low latency. A little smoothing removes single-sample grit without
-    // making the cursor feel like it is dragging behind the Joy-Con.
-    slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.08) + ((double)dx * 0.92);
-    slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.08) + ((double)dy * 0.92);
-    mouse->x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 3.5));
-    mouse->y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 3.5));
-    slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 24.0));
-    slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 24.0));
+    if (slot->mouse_steps_left > 0) {
+        slot->mouse_residual_x += slot->mouse_step_x;
+        slot->mouse_residual_y += slot->mouse_step_y;
+        int out_x = (int)llround(slot->mouse_residual_x);
+        int out_y = (int)llround(slot->mouse_residual_y);
+        slot->mouse_residual_x -= (double)out_x;
+        slot->mouse_residual_y -= (double)out_y;
+        mouse->x = clamp_i16_to_i8(out_x);
+        mouse->y = clamp_i16_to_i8(out_y);
+        slot->mouse_steps_left--;
+    }
 
     // In real right Joy-Con mouse mode, shoulder buttons become mouse buttons.
     if (st->buttons & BTN_R) mouse->buttons |= 0x01;
@@ -442,6 +467,7 @@ static void on_joycon_state(const joycon2_state_t *st) {
         s_right.state.is_right = true;
         s_right.state.is_left = false;
         s_right.valid = true;
+        s_right.mouse_sample_seq++;
         accepted = true;
     } else if (is_left_state(st)) {
         s_left.state = *st;
