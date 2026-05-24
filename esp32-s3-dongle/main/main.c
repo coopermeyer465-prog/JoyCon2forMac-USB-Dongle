@@ -273,16 +273,33 @@ enum {
     BTN_SR_L   = 0x10000000,
 };
 
-static int8_t normalize_12bit_axis(uint16_t v, bool invert) {
+static int8_t normalize_12bit_axis_with_gain(uint16_t v, bool invert, double gain) {
     // Joy-Con reports 0..4095 with center ~2047.
     double n = ((double)v - 2047.0) / 2047.0;
     if (n < -1.0) n = -1.0;
     if (n > 1.0) n = 1.0;
     if (invert) n = -n;
+    if (fabs(n) < 0.025) {
+        n = 0.0;
+    } else {
+        n *= gain;
+    }
+    if (n < -1.0) n = -1.0;
+    if (n > 1.0) n = 1.0;
     int scaled = (int)llround(n * 127.0);
     if (scaled < -127) scaled = -127;
     if (scaled > 127) scaled = 127;
     return (int8_t)scaled;
+}
+
+static int8_t normalize_12bit_axis(uint16_t v, bool invert) {
+    return normalize_12bit_axis_with_gain(v, invert, 1.0);
+}
+
+static int8_t normalize_12bit_axis_for_switch(uint16_t v, bool invert) {
+    // Switch games tend to apply their own deadzones. Boost Joy-Con 2 travel so
+    // small nudges still show up as useful analog movement in-game.
+    return normalize_12bit_axis_with_gain(v, invert, 2.4);
 }
 
 static int8_t normalize_motion_axis(int16_t v, bool invert) {
@@ -585,10 +602,17 @@ static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool consume_mo
         }
     }
 
-    r->lx = normalize_12bit_axis(latest_left_x(), false);
-    r->ly = normalize_12bit_axis(latest_left_y(), true);
-    r->rx = normalize_12bit_axis(latest_right_x(), false);
-    r->ry = normalize_12bit_axis(latest_right_y(), true);
+    if (s_usb_mode == USB_HID_MODE_SWITCH) {
+        r->lx = normalize_12bit_axis_for_switch(latest_left_x(), false);
+        r->ly = normalize_12bit_axis_for_switch(latest_left_y(), true);
+        r->rx = normalize_12bit_axis_for_switch(latest_right_x(), false);
+        r->ry = normalize_12bit_axis_for_switch(latest_right_y(), true);
+    } else {
+        r->lx = normalize_12bit_axis(latest_left_x(), false);
+        r->ly = normalize_12bit_axis(latest_left_y(), true);
+        r->rx = normalize_12bit_axis(latest_right_x(), false);
+        r->ry = normalize_12bit_axis(latest_right_y(), true);
+    }
     if (s_right.valid &&
         s_right.optical_stick_until != 0 &&
         (int32_t)(s_right.optical_stick_until - xTaskGetTickCount()) > 0) {
