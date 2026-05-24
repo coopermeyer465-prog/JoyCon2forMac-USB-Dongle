@@ -507,7 +507,7 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     if (dx != 0 || dy != 0) {
         slot->last_optical_motion_at = xTaskGetTickCount();
         slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
-        slot->optical_stick_until = slot->last_optical_motion_at + pdMS_TO_TICKS(180);
+        slot->optical_stick_until = slot->last_optical_motion_at + pdMS_TO_TICKS(220);
         slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.45) + ((double)dx * 0.55);
         slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.45) + ((double)dy * 0.55);
         slot->mouse_step_x = (slot->smooth_mouse_x * 6.2) / 7.0;
@@ -517,10 +517,10 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         // Game camera control needs an analog-stick-like velocity, not a raw
         // mouse burst. Use a slower filter and a longer hold so in-game look
         // motion feels continuous while the optical sensor is moving.
-        double stick_x = fabs(slot->smooth_mouse_x) < 0.20 ? 0.0 : slot->smooth_mouse_x * 18.0;
-        double stick_y = fabs(slot->smooth_mouse_y) < 0.20 ? 0.0 : slot->smooth_mouse_y * 18.0;
-        slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.70) + (stick_x * 0.30);
-        slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.70) + (stick_y * 0.30);
+        double stick_x = fabs(slot->smooth_mouse_x) < 0.16 ? 0.0 : slot->smooth_mouse_x * 24.0;
+        double stick_y = fabs(slot->smooth_mouse_y) < 0.16 ? 0.0 : slot->smooth_mouse_y * 24.0;
+        slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.58) + (stick_x * 0.42);
+        slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.58) + (stick_y * 0.42);
         slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_x));
         slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_y));
     }
@@ -547,8 +547,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     if (dx == 0 && dy == 0 &&
         slot->optical_stick_until != 0 &&
         (int32_t)(slot->optical_stick_until - xTaskGetTickCount()) > 0) {
-        slot->optical_stick_smooth_x *= 0.96;
-        slot->optical_stick_smooth_y *= 0.96;
+        slot->optical_stick_smooth_x *= 0.93;
+        slot->optical_stick_smooth_y *= 0.93;
         if (fabs(slot->optical_stick_smooth_x) < 1.0) slot->optical_stick_smooth_x = 0.0;
         if (fabs(slot->optical_stick_smooth_y) < 1.0) slot->optical_stick_smooth_y = 0.0;
         slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_x));
