@@ -279,9 +279,9 @@ static uint32_t apply_button_latch_locked(uint32_t buttons) {
     for (int i = 0; i < 32; i++) {
         uint32_t bit = 1UL << i;
         if ((pressed & bit) != 0) {
-            // Hold very fast taps long enough for Steam/browser gamepad polling
-            // to observe them, while real held buttons still track normally.
-            s_button_latch_until[i] = now + pdMS_TO_TICKS(120);
+            // Hold very fast taps just long enough for 60 Hz gamepad polling,
+            // without swallowing rapid repeat taps as one long press.
+            s_button_latch_until[i] = now + pdMS_TO_TICKS(35);
         }
         if ((buttons & bit) == 0 &&
             s_button_latch_until[i] != 0 &&
