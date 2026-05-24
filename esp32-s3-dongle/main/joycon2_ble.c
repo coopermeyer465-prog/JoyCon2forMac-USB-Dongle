@@ -42,6 +42,13 @@ typedef struct {
     uint16_t first_notify_before_cmd;
     uint16_t first_notify_after_cmd;
     uint16_t notify_cccd_handle;
+    uint32_t input_packets;
+    uint32_t ack_packets;
+    uint32_t other_packets;
+    uint8_t last_ack[24];
+    uint8_t last_ack_len;
+    uint8_t last_other[24];
+    uint8_t last_other_len;
     ble_addr_t addr;
     joycon_side_t side;
     char name[40];
@@ -200,6 +207,24 @@ static void emit_status(joycon2_ble_status_t status) {
         status = JOYCON2_BLE_STATUS_NOTIFYING;
     }
     s_status_cb(status);
+}
+
+static void remember_packet_sample(uint8_t *dst, uint8_t *dst_len, const uint8_t *src, uint16_t len) {
+    uint8_t n = len < 24 ? (uint8_t)len : 24;
+    if (n > 0) {
+        memcpy(dst, src, n);
+    }
+    *dst_len = n;
+}
+
+static void log_packet_sample(const char *label, const joycon_conn_t *ctx, const uint8_t *data, uint8_t len) {
+    char hex[73];
+    size_t pos = 0;
+    for (uint8_t i = 0; i < len && pos + 3 < sizeof(hex); i++) {
+        pos += snprintf(&hex[pos], sizeof(hex) - pos, "%02x%s", data[i], i + 1 == len ? "" : " ");
+    }
+    hex[pos] = '\0';
+    ESP_LOGI(TAG, "[%s] %s len=%u data=%s", ctx ? ctx->name : "?", label, (unsigned)len, hex);
 }
 
 static joycon_conn_t *ctx_for_handle(uint16_t conn_handle) {
@@ -688,11 +713,26 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
                     notify_ctx->side = JOYCON_SIDE_LEFT;
                 }
                 notify_ctx->notifying = true;
+                notify_ctx->input_packets++;
                 emit_status(JOYCON2_BLE_STATUS_NOTIFYING);
                 s_cb(&st);
             } else {
                 bool expected_handle = event->notify_rx.attr_handle == notify_ctx->notify_handle ||
                                        event->notify_rx.attr_handle == notify_ctx->ack_handle;
+                if (event->notify_rx.attr_handle == notify_ctx->ack_handle ||
+                    (len >= 2 && packet[1] <= 0x01)) {
+                    notify_ctx->ack_packets++;
+                    remember_packet_sample(notify_ctx->last_ack, &notify_ctx->last_ack_len, packet, len);
+                    if (notify_ctx->ack_packets <= 8 || (notify_ctx->ack_packets % 64) == 0) {
+                        log_packet_sample("ack", notify_ctx, notify_ctx->last_ack, notify_ctx->last_ack_len);
+                    }
+                } else {
+                    notify_ctx->other_packets++;
+                    remember_packet_sample(notify_ctx->last_other, &notify_ctx->last_other_len, packet, len);
+                    if (notify_ctx->other_packets <= 8 || (notify_ctx->other_packets % 64) == 0) {
+                        log_packet_sample("other", notify_ctx, notify_ctx->last_other, notify_ctx->last_other_len);
+                    }
+                }
                 emit_status(expected_handle ? JOYCON2_BLE_STATUS_PACKET_REJECTED
                                             : JOYCON2_BLE_STATUS_NOTIFY_OTHER);
             }
