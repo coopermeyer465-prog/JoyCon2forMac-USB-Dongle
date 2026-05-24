@@ -401,45 +401,22 @@ static void joycon2_send_init_commands_now(joycon_conn_t *ctx) {
         return;
     }
 
-    // Switch 2 controller 0x91 command frames. The INIT, VIBRATE_CFG, and
-    // player LED layouts match the public BlueZ Switch 2 controller plugin
-    // work; keep our existing feature mask because it is known to enable the
-    // Joy-Con 2 mouse/input stream in this firmware.
-    static const uint8_t cmd_init[] = {
-        0x03, 0x91, 0x01, 0x0d, 0x00, 0x08, 0x00, 0x00,
-        0x01, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff
-    };
     static const uint8_t cmd_features_set[] = {0x0c, 0x91, 0x01, 0x02, 0x00, 0x04, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00};
-    static const uint8_t cmd_vibrate_cfg[] = {
-        0x0a, 0x91, 0x01, 0x08, 0x00, 0x14, 0x00, 0x00,
-        0x01,
-        0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
-        0x35, 0x00, 0x46,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    };
     static const uint8_t cmd_features_enable[] = {0x0c, 0x91, 0x01, 0x04, 0x00, 0x04, 0x00, 0x00, 0xff, 0x00, 0x00, 0x00};
-    static const uint8_t cmd_player_led_1[] = {
-        0x09, 0x91, 0x01, 0x07, 0x00, 0x08, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-    };
     static const struct {
-        const char *name;
         const uint8_t *data;
         size_t len;
     } cmds[] = {
-        {"init", cmd_init, sizeof(cmd_init)},
-        {"features_set", cmd_features_set, sizeof(cmd_features_set)},
-        {"vibrate_cfg", cmd_vibrate_cfg, sizeof(cmd_vibrate_cfg)},
-        {"features_enable", cmd_features_enable, sizeof(cmd_features_enable)},
-        {"player_led_1", cmd_player_led_1, sizeof(cmd_player_led_1)},
+        {cmd_features_set, sizeof(cmd_features_set)},
+        {cmd_features_enable, sizeof(cmd_features_enable)},
     };
 
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
         int rc = ble_gattc_write_no_rsp_flat(ctx->conn_handle, ctx->write_handle, cmds[i].data, cmds[i].len);
         if (rc != 0) {
-            ESP_LOGW(TAG, "[%s] init command %s failed rc=%d", ctx->name, cmds[i].name, rc);
+            ESP_LOGW(TAG, "[%s] init command %u failed rc=%d", ctx->name, (unsigned)(i + 1), rc);
         }
-        vTaskDelay(pdMS_TO_TICKS(120));
+        vTaskDelay(pdMS_TO_TICKS(500));
     }
 }
 
