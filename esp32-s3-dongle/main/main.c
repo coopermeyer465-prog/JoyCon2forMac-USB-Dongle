@@ -344,13 +344,13 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->last_optical_motion_at = xTaskGetTickCount();
         slot->mouse_mode_until = slot->last_optical_motion_at + pdMS_TO_TICKS(500);
         slot->optical_stick_until = slot->last_optical_motion_at + pdMS_TO_TICKS(80);
-        slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.50) + ((double)dx * 0.50);
-        slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.50) + ((double)dy * 0.50);
-        slot->mouse_step_x = (slot->smooth_mouse_x * 3.4) / 8.0;
-        slot->mouse_step_y = (slot->smooth_mouse_y * 3.4) / 8.0;
-        slot->mouse_steps_left = 8;
-        slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 18.0));
-        slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 18.0));
+        slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.45) + ((double)dx * 0.55);
+        slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.45) + ((double)dy * 0.55);
+        slot->mouse_step_x = (slot->smooth_mouse_x * 7.0) / 7.0;
+        slot->mouse_step_y = (slot->smooth_mouse_y * 7.0) / 7.0;
+        slot->mouse_steps_left = 7;
+        slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 28.0));
+        slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 28.0));
     }
 
     bool active = slot->mouse_mode_until != 0 &&

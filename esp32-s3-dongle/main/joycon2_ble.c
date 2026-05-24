@@ -10,6 +10,7 @@
 #include "host/ble_gap.h"
 #include "host/ble_gatt.h"
 #include "host/ble_hs.h"
+#include "host/ble_store.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -620,6 +621,10 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             ctx->conn_handle = event->connect.conn_handle;
             save_known_controller(ctx->side, &ctx->addr);
             emit_status(JOYCON2_BLE_STATUS_CONNECTED);
+            int sec_rc = ble_gap_security_initiate(ctx->conn_handle);
+            if (sec_rc != 0 && sec_rc != BLE_HS_EALREADY) {
+                ESP_LOGW(TAG, "[%s] security initiate failed rc=%d", ctx->name, sec_rc);
+            }
             struct ble_gap_upd_params params = {
                 .itvl_min = 6,   // 7.5 ms
                 .itvl_max = 12,  // 15 ms
@@ -651,6 +656,19 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
             emit_status(any_input_flowing() ? JOYCON2_BLE_STATUS_NOTIFYING : JOYCON2_BLE_STATUS_DISCONNECTED);
             joycon2_connect_saved_or_scan();
             return 0;
+        }
+        case BLE_GAP_EVENT_ENC_CHANGE: {
+            ESP_LOGI(TAG, "encryption change conn=%u status=%d",
+                     event->enc_change.conn_handle, event->enc_change.status);
+            return 0;
+        }
+        case BLE_GAP_EVENT_REPEAT_PAIRING: {
+            struct ble_gap_conn_desc desc;
+            int rc = ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
+            if (rc == 0) {
+                (void)ble_store_util_delete_peer(&desc.peer_id_addr);
+            }
+            return BLE_GAP_REPEAT_PAIRING_RETRY;
         }
         case BLE_GAP_EVENT_NOTIFY_RX: {
             joycon_conn_t *notify_ctx = ctx_for_handle(event->notify_rx.conn_handle);
