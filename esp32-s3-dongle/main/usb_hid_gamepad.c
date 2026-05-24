@@ -238,14 +238,36 @@ static uint8_t switch_hat_from_tinyusb_hat(uint8_t hat) {
     return 8;
 }
 
+static uint16_t switch_buttons_from_generic(uint32_t buttons) {
+    uint16_t out = 0;
+    if (buttons & (1u << 3)) out |= 0x0001;  // Y
+    if (buttons & (1u << 1)) out |= 0x0002;  // B
+    if (buttons & (1u << 0)) out |= 0x0004;  // A
+    if (buttons & (1u << 2)) out |= 0x0008;  // X
+    if (buttons & (1u << 4)) out |= 0x0010;  // L
+    if (buttons & (1u << 5)) out |= 0x0020;  // R
+    if (buttons & (1u << 6)) out |= 0x0040;  // ZL
+    if (buttons & (1u << 7)) out |= 0x0080;  // ZR
+    if (buttons & (1u << 8)) out |= 0x0100;  // Minus
+    if (buttons & (1u << 9)) out |= 0x0200;  // Plus
+    if (buttons & (1u << 10)) out |= 0x0400; // Left stick press
+    if (buttons & (1u << 11)) out |= 0x0800; // Right stick press
+    if (buttons & (1u << 12)) out |= 0x1000; // Home
+    if (buttons & (1u << 13)) out |= 0x2000; // Capture
+    return out;
+}
+
 void usb_hid_gamepad_send(const usb_gamepad_report_t *report) {
     if (!tud_hid_n_ready(ITF_NUM_GAMEPAD) || !report) {
         return;
     }
     if (s_usb_mode == USB_HID_MODE_SWITCH) {
-        uint8_t buf[8];
-        buf[0] = (uint8_t)(report->buttons & 0xFF);
-        buf[1] = (uint8_t)((report->buttons >> 8) & 0xFF);
+        // The HORI/Pokken endpoint is 64 bytes. The useful report is the first
+        // 8 bytes, but sending a full interrupt packet keeps picky hosts happy.
+        uint8_t buf[64] = {0};
+        uint16_t buttons = switch_buttons_from_generic(report->buttons);
+        buf[0] = (uint8_t)(buttons & 0xFF);
+        buf[1] = (uint8_t)((buttons >> 8) & 0xFF);
         buf[2] = switch_hat_from_tinyusb_hat(report->hat);
         buf[3] = axis_i8_to_u8(report->lx);
         buf[4] = axis_i8_to_u8(report->ly);
