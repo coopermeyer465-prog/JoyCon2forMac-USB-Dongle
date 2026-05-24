@@ -409,20 +409,49 @@ static uint32_t apply_button_latch_locked(uint32_t buttons, bool enabled) {
     return buttons;
 }
 
+static bool axis_moved(uint16_t v) {
+    return v < 1700 || v > 2400;
+}
+
 static uint16_t latest_left_x(void) {
-    return s_left.valid ? s_left.state.left_x : 2047;
+    if (!s_left.valid) return 2047;
+    if (axis_moved(s_left.state.left_x) || !axis_moved(s_left.state.right_x)) return s_left.state.left_x;
+    return s_left.state.right_x;
 }
 
 static uint16_t latest_left_y(void) {
-    return s_left.valid ? s_left.state.left_y : 2047;
+    if (!s_left.valid) return 2047;
+    if (axis_moved(s_left.state.left_y) || !axis_moved(s_left.state.right_y)) return s_left.state.left_y;
+    return s_left.state.right_y;
 }
 
 static uint16_t latest_right_x(void) {
-    return s_right.valid ? s_right.state.right_x : 2047;
+    if (!s_right.valid) return 2047;
+    if (axis_moved(s_right.state.right_x) || !axis_moved(s_right.state.left_x)) return s_right.state.right_x;
+    return s_right.state.left_x;
 }
 
 static uint16_t latest_right_y(void) {
-    return s_right.valid ? s_right.state.right_y : 2047;
+    if (!s_right.valid) return 2047;
+    if (axis_moved(s_right.state.right_y) || !axis_moved(s_right.state.left_y)) return s_right.state.right_y;
+    return s_right.state.left_y;
+}
+
+static bool looks_like_left_state(const joycon2_state_t *st) {
+    if (!st) return false;
+    if (is_left_state(st)) return true;
+    if (!s_left.valid && axis_moved(st->left_x) && !axis_moved(st->right_x)) return true;
+    return false;
+}
+
+static bool looks_like_right_state(const joycon2_state_t *st) {
+    if (!st) return false;
+    if (is_right_state(st)) return true;
+    if (!s_right.valid && axis_moved(st->right_x) && !axis_moved(st->left_x)) return true;
+    // The right Joy-Con is the only side allowed to own mouse-mode optical
+    // motion. Keep this conservative so left optical noise cannot steal it.
+    if (!s_right.valid && (st->buttons & (BTN_R | BTN_ZR | BTN_RS | BTN_START | BTN_HOME | BTN_CHAT)) != 0) return true;
+    return false;
 }
 
 static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
@@ -599,14 +628,30 @@ static void on_joycon_state(const joycon2_state_t *st) {
         xSemaphoreTake(s_state_mutex, portMAX_DELAY);
     }
 
-    if (is_right_state(st)) {
+    bool right = looks_like_right_state(st);
+    bool left = looks_like_left_state(st);
+
+    if (right && !left) {
         s_right.state = *st;
         s_right.state.is_right = true;
         s_right.state.is_left = false;
         s_right.valid = true;
         s_right.mouse_sample_seq++;
         accepted = true;
-    } else if (is_left_state(st)) {
+    } else if (left && !right) {
+        s_left.state = *st;
+        s_left.state.is_left = true;
+        s_left.state.is_right = false;
+        s_left.valid = true;
+        accepted = true;
+    } else if (right) {
+        s_right.state = *st;
+        s_right.state.is_right = true;
+        s_right.state.is_left = false;
+        s_right.valid = true;
+        s_right.mouse_sample_seq++;
+        accepted = true;
+    } else if (left) {
         s_left.state = *st;
         s_left.state.is_left = true;
         s_left.state.is_right = false;

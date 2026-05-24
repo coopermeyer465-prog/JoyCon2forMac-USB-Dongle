@@ -103,13 +103,14 @@ static bool side_in_use(joycon_side_t side) {
 }
 
 static joycon_side_t fallback_side_for_unknown(void) {
-    // Joy-Con 2 advertisements often do not expose L/R. Prefer right first so
-    // optical mouse mode can start before a side-specific button is pressed.
-    if (!side_in_use(JOYCON_SIDE_RIGHT)) {
-        return JOYCON_SIDE_RIGHT;
-    }
+    // Joy-Con 2 advertisements often do not expose L/R. Prefer left first so
+    // a normal two-controller pairing order does not put the left controller
+    // into the right slot before side-specific input arrives.
     if (!side_in_use(JOYCON_SIDE_LEFT)) {
         return JOYCON_SIDE_LEFT;
+    }
+    if (!side_in_use(JOYCON_SIDE_RIGHT)) {
+        return JOYCON_SIDE_RIGHT;
     }
     return JOYCON_SIDE_UNKNOWN;
 }
