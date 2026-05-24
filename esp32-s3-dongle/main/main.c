@@ -520,10 +520,10 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         // Game camera control needs an analog-stick-like velocity, not a raw
         // mouse burst. Use a slower filter and a longer hold so in-game look
         // motion feels continuous while the optical sensor is moving.
-        double stick_x = fabs(slot->smooth_mouse_x) < 0.14 ? 0.0 : slot->smooth_mouse_x * 28.0;
-        double stick_y = fabs(slot->smooth_mouse_y) < 0.14 ? 0.0 : slot->smooth_mouse_y * 28.0;
-        slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.58) + (stick_x * 0.42);
-        slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.58) + (stick_y * 0.42);
+        double stick_x = fabs(slot->smooth_mouse_x) < 0.18 ? 0.0 : slot->smooth_mouse_x * 42.0;
+        double stick_y = fabs(slot->smooth_mouse_y) < 0.18 ? 0.0 : slot->smooth_mouse_y * 42.0;
+        slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.64) + (stick_x * 0.36);
+        slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.64) + (stick_y * 0.36);
         slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_x));
         slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_y));
     }
