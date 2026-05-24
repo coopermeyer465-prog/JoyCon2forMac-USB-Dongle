@@ -725,34 +725,9 @@ static void joycon2_scan_start(void) {
 }
 
 static void joycon2_connect_saved_or_scan(void) {
-    if (s_connecting || !free_slot_exists()) {
-        return;
-    }
-    for (size_t i = 0; i < sizeof(s_saved) / sizeof(s_saved[0]); i++) {
-        if (!s_saved[i].allocated || ctx_for_addr(&s_saved[i].addr)) {
-            continue;
-        }
-        joycon_conn_t *new_ctx = alloc_ctx();
-        if (!new_ctx) {
-            break;
-        }
-        new_ctx->addr = s_saved[i].addr;
-        new_ctx->side = s_saved[i].side;
-        new_ctx->remembered = true;
-        snprintf(new_ctx->name, sizeof(new_ctx->name), "%s", s_saved[i].name);
-        new_ctx->connecting = true;
-        s_connecting = true;
-        emit_status(JOYCON2_BLE_STATUS_FOUND);
-        ESP_LOGI(TAG, "Trying remembered %s...", new_ctx->name);
-        int rc = ble_gap_connect(s_own_addr_type, &new_ctx->addr, 7000, NULL, joycon2_gap_event, new_ctx);
-        if (rc != 0) {
-            ESP_LOGW(TAG, "remembered connect failed rc=%d", rc);
-            s_connecting = false;
-            release_ctx(new_ctx);
-            continue;
-        }
-        return;
-    }
+    // Joy-Con 2 normal button wake does not currently accept direct reconnect
+    // from this dongle, so keep startup predictable: scan for advertising
+    // controllers instead of blocking on saved-address connection attempts.
     joycon2_scan_start();
 }
 

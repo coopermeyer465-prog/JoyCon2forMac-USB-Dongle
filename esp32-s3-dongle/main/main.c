@@ -279,9 +279,9 @@ static uint32_t apply_button_latch_locked(uint32_t buttons) {
     for (int i = 0; i < 32; i++) {
         uint32_t bit = 1UL << i;
         if ((pressed & bit) != 0) {
-            // Hold very fast taps just long enough for 60 Hz gamepad polling,
-            // without swallowing rapid repeat taps as one long press.
-            s_button_latch_until[i] = now + pdMS_TO_TICKS(35);
+            // Hold very fast taps just past one 60 Hz gamepad poll, without
+            // swallowing rapid repeat taps as one long press.
+            s_button_latch_until[i] = now + pdMS_TO_TICKS(20);
         }
         if ((buttons & bit) == 0 &&
             s_button_latch_until[i] != 0 &&
@@ -346,11 +346,11 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->optical_stick_until = slot->last_optical_motion_at + pdMS_TO_TICKS(80);
         slot->smooth_mouse_x = (slot->smooth_mouse_x * 0.45) + ((double)dx * 0.55);
         slot->smooth_mouse_y = (slot->smooth_mouse_y * 0.45) + ((double)dy * 0.55);
-        slot->mouse_step_x = (slot->smooth_mouse_x * 7.0) / 7.0;
-        slot->mouse_step_y = (slot->smooth_mouse_y * 7.0) / 7.0;
+        slot->mouse_step_x = (slot->smooth_mouse_x * 6.2) / 7.0;
+        slot->mouse_step_y = (slot->smooth_mouse_y * 6.2) / 7.0;
         slot->mouse_steps_left = 7;
-        slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 28.0));
-        slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 28.0));
+        slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->smooth_mouse_x * 25.0));
+        slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->smooth_mouse_y * 25.0));
     }
 
     bool active = slot->mouse_mode_until != 0 &&
