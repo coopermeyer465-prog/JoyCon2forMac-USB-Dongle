@@ -333,10 +333,6 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         slot->processed_mouse_sample_seq = slot->mouse_sample_seq;
     }
 
-    // Joy-Con 2 reports optical surface motion; cursor motion is the inverse.
-    dx = -dx;
-    dy = -dy;
-
     // Optical mode reports absolute-ish counters. Ignore impossible jumps only;
     // small movement should still wake mouse mode or it feels dead.
     if (abs(dx) > 160 || abs(dy) > 160) {
