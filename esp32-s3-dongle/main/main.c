@@ -520,14 +520,10 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         // Game camera control needs an analog-stick-like velocity, not a raw
         // mouse burst. Use a slower filter and a longer hold so in-game look
         // motion feels continuous while the optical sensor is moving.
-        double mag_x = fabs(slot->smooth_mouse_x);
-        double mag_y = fabs(slot->smooth_mouse_y);
-        double gain_x = 28.0 + (mag_x > 1.0 ? 10.0 : mag_x * 10.0);
-        double gain_y = 28.0 + (mag_y > 1.0 ? 10.0 : mag_y * 10.0);
-        double stick_x = mag_x < 0.14 ? 0.0 : slot->smooth_mouse_x * gain_x;
-        double stick_y = mag_y < 0.14 ? 0.0 : slot->smooth_mouse_y * gain_y;
-        slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.58) + (stick_x * 0.42);
-        slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.58) + (stick_y * 0.42);
+        double stick_x = fabs(slot->smooth_mouse_x) < 0.15 ? 0.0 : slot->smooth_mouse_x * 32.0;
+        double stick_y = fabs(slot->smooth_mouse_y) < 0.15 ? 0.0 : slot->smooth_mouse_y * 32.0;
+        slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.60) + (stick_x * 0.40);
+        slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.60) + (stick_y * 0.40);
         slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_x));
         slot->optical_stick_y = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_y));
     }
@@ -765,6 +761,7 @@ static void usb_report_task(void *param) {
     usb_gamepad_report_t previous_r = {0};
     usb_mouse_report_t previous_m = {0};
     bool previous_valid = false;
+    TickType_t last_switch_send = 0;
 
     while (1) {
         usb_mouse_report_t m = {0};
@@ -792,11 +789,17 @@ static void usb_report_task(void *param) {
         bool changed = !previous_valid ||
                        memcmp(&r, &previous_r, sizeof(r)) != 0 ||
                        memcmp(&m, &previous_m, sizeof(m)) != 0;
+        TickType_t now = xTaskGetTickCount();
+        bool switch_poll_due = s_usb_mode == USB_HID_MODE_SWITCH &&
+                               (last_switch_send == 0 ||
+                                (int32_t)(now - last_switch_send) >= (int32_t)pdMS_TO_TICKS(5));
 
-        if (has_controller && (s_usb_mode == USB_HID_MODE_COMPUTER || changed)) {
+        if (has_controller && (s_usb_mode == USB_HID_MODE_COMPUTER || changed || switch_poll_due)) {
             usb_hid_gamepad_send(&r);
             if (s_usb_mode == USB_HID_MODE_COMPUTER) {
                 usb_hid_mouse_send(&m);
+            } else {
+                last_switch_send = now;
             }
             previous_r = r;
             previous_m = m;
