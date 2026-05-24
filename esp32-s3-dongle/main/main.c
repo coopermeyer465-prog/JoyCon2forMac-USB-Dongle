@@ -28,6 +28,12 @@ static const char *TAG = "main";
 #define JOYCON2_MODE_BUTTON_GPIO GPIO_NUM_0
 #endif
 
+// This branch is for Switch testing, so first boot defaults to Switch mode.
+// Once mode is saved in NVS, the BOOT long-press toggle controls it.
+#ifndef JOYCON2_DEFAULT_USB_MODE
+#define JOYCON2_DEFAULT_USB_MODE USB_HID_MODE_SWITCH
+#endif
+
 typedef enum {
     LED_MODE_SCANNING = 0,
     LED_MODE_FOUND,
@@ -73,7 +79,7 @@ static void nvs_init_once(void) {
 
 static usb_hid_mode_t load_usb_mode(void) {
     nvs_handle_t nvs;
-    uint8_t raw = 0;
+    uint8_t raw = (uint8_t)JOYCON2_DEFAULT_USB_MODE;
     esp_err_t err = nvs_open("joycon2", NVS_READONLY, &nvs);
     if (err == ESP_OK) {
         (void)nvs_get_u8(nvs, "usb_mode", &raw);
@@ -140,6 +146,17 @@ static void mode_button_task(void *param) {
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+}
+
+static void indicate_usb_mode_once(void) {
+    int pulses = s_usb_mode == USB_HID_MODE_SWITCH ? 2 : 1;
+    for (int i = 0; i < pulses; i++) {
+        status_led_set(true);
+        vTaskDelay(pdMS_TO_TICKS(120));
+        status_led_set(false);
+        vTaskDelay(pdMS_TO_TICKS(120));
+    }
+    vTaskDelay(pdMS_TO_TICKS(250));
 }
 
 static void status_led_pulse(int on_ms, int off_ms) {
@@ -597,6 +614,14 @@ static void usb_report_task(void *param) {
         }
 
         bool has_controller = prepare_usb_reports_locked(&r, &m);
+        if (!has_controller && s_usb_mode == USB_HID_MODE_SWITCH) {
+            r.lx = 0;
+            r.ly = 0;
+            r.rx = 0;
+            r.ry = 0;
+            r.hat = 0;
+            has_controller = true;
+        }
 
         if (s_state_mutex) {
             xSemaphoreGive(s_state_mutex);
@@ -616,6 +641,7 @@ void app_main(void) {
     nvs_init_once();
     s_usb_mode = load_usb_mode();
     ESP_LOGI(TAG, "USB mode: %s", s_usb_mode == USB_HID_MODE_SWITCH ? "Switch wired controller" : "computer gamepad+mouse");
+    indicate_usb_mode_once();
     // LED patterns: slow=scanning, fast=found/connecting, double=connected, solid=input flowing.
     xTaskCreatePinnedToCore(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL, 1);
     xTaskCreatePinnedToCore(mode_button_task, "mode_button", 2048, NULL, 2, NULL, 1);
