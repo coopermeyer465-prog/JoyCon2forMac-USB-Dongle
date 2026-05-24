@@ -377,6 +377,9 @@ static TickType_t s_button_latch_until[32];
 static uint32_t s_switch_stable_buttons;
 static uint32_t s_switch_candidate_buttons;
 static uint8_t s_switch_candidate_count;
+static TickType_t s_left_forward_tap_until;
+static TickType_t s_left_forward_sprint_until;
+static bool s_left_forward_was_active;
 
 static bool is_right_state(const joycon2_state_t *st) {
     if (st->is_right) return true;
@@ -517,8 +520,8 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
         // Game camera control needs an analog-stick-like velocity, not a raw
         // mouse burst. Use a slower filter and a longer hold so in-game look
         // motion feels continuous while the optical sensor is moving.
-        double stick_x = fabs(slot->smooth_mouse_x) < 0.16 ? 0.0 : slot->smooth_mouse_x * 24.0;
-        double stick_y = fabs(slot->smooth_mouse_y) < 0.16 ? 0.0 : slot->smooth_mouse_y * 24.0;
+        double stick_x = fabs(slot->smooth_mouse_x) < 0.14 ? 0.0 : slot->smooth_mouse_x * 28.0;
+        double stick_y = fabs(slot->smooth_mouse_y) < 0.14 ? 0.0 : slot->smooth_mouse_y * 28.0;
         slot->optical_stick_smooth_x = (slot->optical_stick_smooth_x * 0.58) + (stick_x * 0.42);
         slot->optical_stick_smooth_y = (slot->optical_stick_smooth_y * 0.58) + (stick_y * 0.42);
         slot->optical_stick_x = clamp_i16_to_i8((int)llround(slot->optical_stick_smooth_x));
@@ -666,6 +669,32 @@ static bool prepare_usb_reports_locked(usb_gamepad_report_t *r, usb_mouse_report
     return true;
 }
 
+static void apply_switch_sprint_helper_locked(usb_gamepad_report_t *r) {
+    if (!r || s_usb_mode != USB_HID_MODE_SWITCH || !s_left.valid) {
+        return;
+    }
+
+    TickType_t now = xTaskGetTickCount();
+    int8_t forward = normalize_12bit_axis_for_switch(latest_left_y(), true);
+    int forward_abs = abs((int)forward);
+    bool forward_active = forward_abs >= 28;
+
+    if (forward_active && !s_left_forward_was_active) {
+        if (s_left_forward_tap_until != 0 &&
+            (int32_t)(s_left_forward_tap_until - now) > 0) {
+            s_left_forward_sprint_until = now + pdMS_TO_TICKS(260);
+        }
+        s_left_forward_tap_until = now + pdMS_TO_TICKS(360);
+    }
+    s_left_forward_was_active = forward_active;
+
+    if (s_left_forward_sprint_until != 0 &&
+        (int32_t)(s_left_forward_sprint_until - now) > 0 &&
+        forward_abs >= 10) {
+        r->ly = forward < 0 ? -127 : 127;
+    }
+}
+
 static void on_joycon_state(const joycon2_state_t *st) {
     if (!st) return;
     bool accepted = false;
@@ -710,6 +739,7 @@ static void on_joycon_state(const joycon2_state_t *st) {
 
     if (accepted) {
         has_report = prepare_usb_reports_locked(&r, &m);
+        apply_switch_sprint_helper_locked(&r);
     }
 
     if (s_state_mutex) {
@@ -741,6 +771,7 @@ static void usb_report_task(void *param) {
         }
 
         bool has_controller = prepare_usb_reports_locked(&r, &m);
+        apply_switch_sprint_helper_locked(&r);
         if (!has_controller && s_usb_mode == USB_HID_MODE_SWITCH) {
             r.lx = 0;
             r.ly = 0;
