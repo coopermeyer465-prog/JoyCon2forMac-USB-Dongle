@@ -379,7 +379,13 @@ static bool any_controller_valid(void) {
     return s_left.valid || s_right.valid;
 }
 
-static uint32_t apply_button_latch_locked(uint32_t buttons) {
+static uint32_t apply_button_latch_locked(uint32_t buttons, bool enabled) {
+    if (!enabled) {
+        s_previous_buttons = buttons;
+        memset(s_button_latch_until, 0, sizeof(s_button_latch_until));
+        return buttons;
+    }
+
     uint32_t raw_buttons = buttons;
     TickType_t now = xTaskGetTickCount();
     uint32_t pressed = raw_buttons & ~s_previous_buttons;
@@ -502,7 +508,7 @@ static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool consume_mo
     if (consume_mouse_buttons) {
         buttons &= ~(BTN_R | BTN_ZR);
     }
-    buttons = apply_button_latch_locked(buttons);
+    buttons = apply_button_latch_locked(buttons, s_usb_mode == USB_HID_MODE_COMPUTER);
 
     r->hat = hat_from_buttons(buttons);
 
@@ -605,6 +611,10 @@ static void on_joycon_state(const joycon2_state_t *st) {
 
 static void usb_report_task(void *param) {
     (void)param;
+    usb_gamepad_report_t previous_r = {0};
+    usb_mouse_report_t previous_m = {0};
+    bool previous_valid = false;
+
     while (1) {
         usb_mouse_report_t m = {0};
         usb_gamepad_report_t r = {0};
@@ -627,9 +637,18 @@ static void usb_report_task(void *param) {
             xSemaphoreGive(s_state_mutex);
         }
 
-        if (r.buttons != 0 || has_controller) {
+        bool changed = !previous_valid ||
+                       memcmp(&r, &previous_r, sizeof(r)) != 0 ||
+                       memcmp(&m, &previous_m, sizeof(m)) != 0;
+
+        if (has_controller && (s_usb_mode == USB_HID_MODE_COMPUTER || changed)) {
             usb_hid_gamepad_send(&r);
-            usb_hid_mouse_send(&m);
+            if (s_usb_mode == USB_HID_MODE_COMPUTER) {
+                usb_hid_mouse_send(&m);
+            }
+            previous_r = r;
+            previous_m = m;
+            previous_valid = true;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
