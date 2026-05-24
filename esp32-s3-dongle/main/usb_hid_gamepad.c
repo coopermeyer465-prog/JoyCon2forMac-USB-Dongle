@@ -156,7 +156,7 @@ static const uint8_t computer_configuration_descriptor[] = {
 
 static const uint8_t switch_configuration_descriptor[] = {
     TUD_CONFIG_DESCRIPTOR(1, 1, 0, SWITCH_DESC_TOTAL_LEN, 0, 500),
-    TUD_HID_INOUT_DESCRIPTOR(0, 4, false, sizeof(switch_report_descriptor), 0x02, 0x81, 64, 5),
+    TUD_HID_INOUT_DESCRIPTOR(0, 4, false, sizeof(switch_report_descriptor), 0x02, 0x81, 64, 1),
 };
 
 // TinyUSB callbacks (minimal).
