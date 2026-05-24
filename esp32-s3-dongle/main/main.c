@@ -299,7 +299,7 @@ static int8_t normalize_12bit_axis(uint16_t v, bool invert) {
 static int8_t normalize_12bit_axis_for_switch(uint16_t v, bool invert) {
     // Switch games tend to apply their own deadzones. Boost Joy-Con 2 travel so
     // small nudges still show up as useful analog movement in-game.
-    return normalize_12bit_axis_with_gain(v, invert, 2.4);
+    return normalize_12bit_axis_with_gain(v, invert, 2.05);
 }
 
 static int8_t normalize_motion_axis(int16_t v, bool invert) {

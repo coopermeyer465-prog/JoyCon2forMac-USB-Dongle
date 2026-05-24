@@ -258,10 +258,21 @@ static void parse_stick_3b(const uint8_t *p, uint16_t *x, uint16_t *y) {
 static void infer_side_from_buttons(joycon2_state_t *st, joycon_side_t hint) {
     const uint32_t right_mask = 0x0000FF00u | 0x00040000u | 0x00020000u | 0x00100000u | 0x00400000u;
     const uint32_t left_mask = 0xFF000000u | 0x00080000u | 0x00010000u | 0x00200000u;
-    if (hint == JOYCON_SIDE_RIGHT || (st->buttons & right_mask)) {
+    bool right_buttons = (st->buttons & right_mask) != 0;
+    bool left_buttons = (st->buttons & left_mask) != 0;
+
+    if (right_buttons && !left_buttons) {
         st->is_right = true;
+        return;
     }
-    if (hint == JOYCON_SIDE_LEFT || (st->buttons & left_mask)) {
+    if (left_buttons && !right_buttons) {
+        st->is_left = true;
+        return;
+    }
+
+    if (hint == JOYCON_SIDE_RIGHT) {
+        st->is_right = true;
+    } else if (hint == JOYCON_SIDE_LEFT) {
         st->is_left = true;
     }
 }
@@ -671,13 +682,6 @@ static int joycon2_gap_event(struct ble_gap_event *event, void *arg) {
 
             joycon2_state_t st;
             if (parse_packet(packet, len, notify_ctx->side, &st) && s_cb) {
-                if (notify_ctx->side == JOYCON_SIDE_RIGHT) {
-                    st.is_right = true;
-                    st.is_left = false;
-                } else if (notify_ctx->side == JOYCON_SIDE_LEFT) {
-                    st.is_left = true;
-                    st.is_right = false;
-                }
                 if (event->notify_rx.attr_handle != notify_ctx->notify_handle) {
                     ESP_LOGI(TAG, "[%s] Promoting notify handle %u -> %u",
                              notify_ctx->name, notify_ctx->notify_handle, event->notify_rx.attr_handle);
