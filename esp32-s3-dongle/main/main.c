@@ -355,6 +355,9 @@ static device_slot_t s_right;
 static SemaphoreHandle_t s_state_mutex;
 static uint32_t s_previous_buttons;
 static TickType_t s_button_latch_until[32];
+static uint32_t s_switch_stable_buttons;
+static uint32_t s_switch_candidate_buttons;
+static uint8_t s_switch_candidate_count;
 
 static bool is_right_state(const joycon2_state_t *st) {
     if (st->is_right) return true;
@@ -533,6 +536,26 @@ static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool consume_mo
     if (buttons & BTN_SL_R) r->buttons |= (1u << 17);   // SL(R)
     if (buttons & BTN_SR_R) r->buttons |= (1u << 18);   // SR(R)
 
+    if (s_usb_mode == USB_HID_MODE_SWITCH) {
+        if (r->buttons != s_switch_stable_buttons) {
+            if (r->buttons == s_switch_candidate_buttons) {
+                if (s_switch_candidate_count < 3) {
+                    s_switch_candidate_count++;
+                }
+            } else {
+                s_switch_candidate_buttons = r->buttons;
+                s_switch_candidate_count = 1;
+            }
+            if (s_switch_candidate_count >= 2) {
+                s_switch_stable_buttons = s_switch_candidate_buttons;
+            }
+            r->buttons = s_switch_stable_buttons;
+        } else {
+            s_switch_candidate_buttons = r->buttons;
+            s_switch_candidate_count = 0;
+        }
+    }
+
     r->lx = normalize_12bit_axis(latest_left_x(), false);
     r->ly = normalize_12bit_axis(latest_left_y(), true);
     r->rx = normalize_12bit_axis(latest_right_x(), false);
@@ -603,7 +626,7 @@ static void on_joycon_state(const joycon2_state_t *st) {
         s_last_real_input_at = xTaskGetTickCount();
         s_led_mode = LED_MODE_NOTIFICATIONS;
     }
-    if (has_report) {
+    if (has_report && s_usb_mode == USB_HID_MODE_COMPUTER) {
         usb_hid_gamepad_send(&r);
         usb_hid_mouse_send(&m);
     }
