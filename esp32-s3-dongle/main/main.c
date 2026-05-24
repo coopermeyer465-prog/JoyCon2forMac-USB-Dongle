@@ -3,11 +3,15 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "esp_err.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 #include "joycon2_ble.h"
 #include "usb_hid_gamepad.h"
@@ -18,6 +22,10 @@ static const char *TAG = "main";
 // Keeping this here avoids needing a separate board support layer.
 #ifndef JOYCON2_STATUS_LED_GPIO
 #define JOYCON2_STATUS_LED_GPIO GPIO_NUM_21
+#endif
+
+#ifndef JOYCON2_MODE_BUTTON_GPIO
+#define JOYCON2_MODE_BUTTON_GPIO GPIO_NUM_0
 #endif
 
 typedef enum {
@@ -33,6 +41,7 @@ typedef enum {
 static volatile led_mode_t s_led_mode = LED_MODE_SCANNING;
 static volatile led_mode_t s_last_ble_mode = LED_MODE_SCANNING;
 static volatile TickType_t s_last_real_input_at = 0;
+static usb_hid_mode_t s_usb_mode = USB_HID_MODE_COMPUTER;
 
 static void status_led_init(void) {
     gpio_config_t cfg = {
@@ -50,6 +59,87 @@ static void status_led_init(void) {
 static void status_led_set(bool on) {
     // active-low
     (void)gpio_set_level(JOYCON2_STATUS_LED_GPIO, on ? 0 : 1);
+}
+
+static void nvs_init_once(void) {
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ESP_ERROR_CHECK(nvs_flash_init());
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
+}
+
+static usb_hid_mode_t load_usb_mode(void) {
+    nvs_handle_t nvs;
+    uint8_t raw = 0;
+    esp_err_t err = nvs_open("joycon2", NVS_READONLY, &nvs);
+    if (err == ESP_OK) {
+        (void)nvs_get_u8(nvs, "usb_mode", &raw);
+        nvs_close(nvs);
+    }
+    return raw == USB_HID_MODE_SWITCH ? USB_HID_MODE_SWITCH : USB_HID_MODE_COMPUTER;
+}
+
+static void save_usb_mode(usb_hid_mode_t mode) {
+    nvs_handle_t nvs;
+    esp_err_t err = nvs_open("joycon2", NVS_READWRITE, &nvs);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open usb_mode failed err=0x%x", (unsigned)err);
+        return;
+    }
+    err = nvs_set_u8(nvs, "usb_mode", (uint8_t)mode);
+    if (err == ESP_OK) {
+        (void)nvs_commit(nvs);
+    } else {
+        ESP_LOGW(TAG, "nvs_set_u8 usb_mode failed err=0x%x", (unsigned)err);
+    }
+    nvs_close(nvs);
+}
+
+static void mode_button_init(void) {
+    gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << JOYCON2_MODE_BUTTON_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = true,
+        .pull_down_en = false,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    (void)gpio_config(&cfg);
+}
+
+static void mode_button_task(void *param) {
+    (void)param;
+    mode_button_init();
+
+    // Avoid toggling if the button is already down during a manual reset.
+    while (gpio_get_level(JOYCON2_MODE_BUTTON_GPIO) == 0) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+
+    TickType_t held_since = 0;
+    while (1) {
+        bool down = gpio_get_level(JOYCON2_MODE_BUTTON_GPIO) == 0;
+        TickType_t now = xTaskGetTickCount();
+        if (down) {
+            if (held_since == 0) {
+                held_since = now;
+            } else if ((int32_t)(now - held_since) >= (int32_t)pdMS_TO_TICKS(1500)) {
+                usb_hid_mode_t next = s_usb_mode == USB_HID_MODE_SWITCH ? USB_HID_MODE_COMPUTER : USB_HID_MODE_SWITCH;
+                ESP_LOGI(TAG, "Switching saved USB mode to %s; restarting", next == USB_HID_MODE_SWITCH ? "Switch" : "computer");
+                save_usb_mode(next);
+                for (int i = 0; i < 6; i++) {
+                    status_led_set((i % 2) == 0);
+                    vTaskDelay(pdMS_TO_TICKS(90));
+                }
+                esp_restart();
+            }
+        } else {
+            held_since = 0;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
 }
 
 static void status_led_pulse(int on_ms, int off_ms) {
@@ -386,13 +476,13 @@ static bool right_mouse_active(device_slot_t *slot, usb_mouse_report_t *mouse) {
     return true;
 }
 
-static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool mouse_mode) {
+static void build_gamepad_report_locked(usb_gamepad_report_t *r, bool consume_mouse_buttons) {
     if (!r) return;
     memset(r, 0, sizeof(*r));
     uint32_t buttons = merged_buttons();
 
     // In right Joy-Con mouse mode, R/ZR are mouse buttons, not gamepad buttons.
-    if (mouse_mode) {
+    if (consume_mouse_buttons) {
         buttons &= ~(BTN_R | BTN_ZR);
     }
     buttons = apply_button_latch_locked(buttons);
@@ -447,7 +537,8 @@ static bool prepare_usb_reports_locked(usb_gamepad_report_t *r, usb_mouse_report
     }
 
     bool mouse_mode = right_mouse_active(&s_right, m);
-    build_gamepad_report_locked(r, mouse_mode);
+    bool consume_mouse_buttons = (s_usb_mode == USB_HID_MODE_COMPUTER) && mouse_mode;
+    build_gamepad_report_locked(r, consume_mouse_buttons);
     return true;
 }
 
@@ -522,10 +613,14 @@ static void usb_report_task(void *param) {
 void app_main(void) {
     ESP_LOGI(TAG, "Starting JoyCon2forMac ESP32-S3 dongle (scaffold)");
     status_led_init();
+    nvs_init_once();
+    s_usb_mode = load_usb_mode();
+    ESP_LOGI(TAG, "USB mode: %s", s_usb_mode == USB_HID_MODE_SWITCH ? "Switch wired controller" : "computer gamepad+mouse");
     // LED patterns: slow=scanning, fast=found/connecting, double=connected, solid=input flowing.
     xTaskCreatePinnedToCore(status_led_blink_task, "led_blink", 2048, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(mode_button_task, "mode_button", 2048, NULL, 2, NULL, 1);
     s_state_mutex = xSemaphoreCreateMutex();
-    usb_hid_gamepad_init();
+    usb_hid_gamepad_init(s_usb_mode);
     xTaskCreatePinnedToCore(usb_report_task, "usb_report", 4096, NULL, 2, NULL, 1);
     joycon2_ble_set_status_callback(on_ble_status);
     joycon2_ble_start(on_joycon_state);

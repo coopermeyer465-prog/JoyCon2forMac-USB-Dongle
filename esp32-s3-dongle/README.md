@@ -1,16 +1,16 @@
 # JoyCon2forMac ESP32-S3 Dongle (WIP)
 
-Goal: make Joy-Con 2 work as a **plug-and-play USB controller** on macOS.
+Goal: make Joy-Con 2 work as a **plug-and-play USB controller** on macOS, with an experimental Switch-compatible USB mode.
 
 The ESP32-S3 acts as:
 - BLE Central: connects to Joy-Con 2 (same BLE UUIDs + init commands used by the macOS app)
-- USB HID Device (TinyUSB): exposes a **gamepad** over USB-C to the Mac
+- USB HID Device (TinyUSB): exposes a **gamepad + mouse** over USB-C to the Mac, or a Switch-compatible wired controller when booted in Switch mode
 
 This avoids macOS Accessibility/Input Monitoring permissions entirely.
 
 ## Status
 
-This folder is a scaffold for an ESP-IDF firmware project. It is not complete yet.
+Computer mode is the stable/default mode. Switch mode is experimental and is selected with a long press on the XIAO BOOT button while the firmware is already running.
 
 ## Requirements
 
@@ -43,20 +43,32 @@ idf.py -p /dev/cu.usbmodemXXXX flash monitor
 
 ## Default Behavior (Current)
 
-- The dongle exposes a **USB HID gamepad** to macOS.
-- It also exposes an **optional USB HID mouse**:
-  - Hold **Right Stick Press (RS)** to enter mouse mode
-  - While holding RS:
-    - Right stick moves the cursor (relative)
-    - `R` = left click (drag-select capable)
-    - `ZR` = right click
+- Normal boot exposes a **USB HID gamepad + mouse** to macOS/Windows.
+- Pair Joy-Con 2 by holding each Joy-Con sync button until the LEDs chase.
+- Right Joy-Con mouse sensor drives USB mouse movement.
+- In Joy-Con mouse mode:
+  - `R` = left click
+  - `ZR` = right click
+  - optical mouse movement also feeds the gamepad right stick for games that read camera input
+
+## Switch Mode
+
+Switch mode makes the ESP32-S3 enumerate as a HORI/Pokken-style wired USB controller instead of the normal Mac/PC gamepad+mouse composite device.
+
+1. Boot the dongle normally.
+2. Hold the XIAO ESP32-S3 **BOOT** button for about 1.5 seconds.
+3. The firmware saves the other USB mode and restarts.
+4. To switch back, hold BOOT for about 1.5 seconds again.
+
+In Switch mode there is no USB mouse interface. The right Joy-Con mouse sensor is translated into right-stick movement so games can see camera/look input.
+
+Do not hold BOOT while tapping RESET unless you want firmware flashing mode. On the XIAO ESP32-S3, BOOT-at-reset is the hardware bootloader shortcut.
 
 ## Intended Flow
 
-1. Plug ESP32-S3 into your Mac via USB-C.
-2. ESP32-S3 appears as a "JoyCon2forMac Gamepad" in macOS.
-3. Put Joy-Con 2 in pairing mode (sync button until LEDs flash).
-4. ESP connects, subscribes to notifications, sends init commands, and translates packets into USB HID reports.
+1. Plug ESP32-S3 into your Mac, PC, or Switch via USB-C.
+2. Put Joy-Con 2 in pairing mode by holding the sync button until LEDs flash.
+3. ESP connects, subscribes to notifications, and translates packets into USB HID reports.
 
 ## BLE Details (from macOS implementation)
 

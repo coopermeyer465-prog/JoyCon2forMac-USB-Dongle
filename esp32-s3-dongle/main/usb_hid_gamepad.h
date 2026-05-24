@@ -20,6 +20,12 @@ typedef struct {
     int8_t wheel;
 } usb_mouse_report_t;
 
-void usb_hid_gamepad_init(void);
+typedef enum {
+    USB_HID_MODE_COMPUTER = 0,
+    USB_HID_MODE_SWITCH = 1,
+} usb_hid_mode_t;
+
+void usb_hid_gamepad_init(usb_hid_mode_t mode);
+usb_hid_mode_t usb_hid_current_mode(void);
 void usb_hid_gamepad_send(const usb_gamepad_report_t *report);
 void usb_hid_mouse_send(const usb_mouse_report_t *report);
